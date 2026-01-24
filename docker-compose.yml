@@ -1,0 +1,50 @@
+services:
+  # 价格监控服务
+  crypto-monitor:
+    build: .
+    container_name: crypto-monitor
+    restart: unless-stopped
+    command: ["python", "monitor.py"]
+    env_file:
+      - .env
+    volumes:
+      # 持久化日志
+      - ./logs:/app/logs
+    networks:
+      - crypto-network
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # Telegram 交互 Bot 服务
+  crypto-bot:
+    build: .
+    container_name: crypto-bot
+    restart: unless-stopped
+    command: ["python", "bot.py"]
+    env_file:
+      - .env
+    volumes:
+      # 持久化日志
+      - ./logs:/app/logs
+    networks:
+      - crypto-network
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+networks:
+  crypto-network:
+    driver: bridge
