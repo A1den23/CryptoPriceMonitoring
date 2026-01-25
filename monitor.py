@@ -51,7 +51,7 @@ class PriceMonitor:
         self.price_history: deque[PriceData] = deque()
         self.last_integer_milestone = None
         self.last_price = None
-        self.update_count = 0
+        self.last_processed_price = None  # Last price that triggered alerts
 
     def check_integer_milestone(self, current_price: float) -> bool:
         """Check if price reached an integer milestone using crossing detection"""
@@ -215,9 +215,27 @@ class PriceMonitor:
 
         return volatility_info
 
-    def check(self, current_price: float) -> str:
-        """Check price and return formatted output"""
-        self.update_count += 1
+    def check(self, current_price: float) -> Optional[str]:
+        """
+        Check price and return formatted output
+
+        Only processes if price has changed significantly to avoid duplicate alerts.
+        Returns None if price hasn't changed, otherwise returns formatted output.
+        """
+        # Skip if price hasn't changed (avoid duplicate processing from WebSocket high-frequency updates)
+        if self.last_processed_price is not None:
+            price_diff = abs(current_price - self.last_processed_price)
+            # For prices >= $1, minimum change is $0.001
+            # For prices < $1, minimum change is $0.0001
+            min_change = 0.001 if current_price >= 1 else 0.0001
+
+            if price_diff < min_change:
+                # Price hasn't changed enough to matter
+                return None
+
+        # Update last processed price
+        self.last_processed_price = current_price
+
         coin = get_coin_display_name(self.config.symbol)
 
         # Check for integer milestone
@@ -278,11 +296,12 @@ class WebSocketMultiCoinMonitor:
         if not monitor:
             return
 
-        # Check price for alerts
+        # Check price for alerts (returns None if price hasn't changed)
         output = monitor.check(price)
 
-        # Accumulate updates for periodic printing
-        self._pending_updates.append(output)
+        # Only add to pending updates if price has changed
+        if output is not None:
+            self._pending_updates.append(output)
 
         # Print updates periodically
         current_time = datetime.now(UTC8)
