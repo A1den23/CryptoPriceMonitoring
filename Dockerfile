@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies to a temporary location
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Install Python dependencies to system location (accessible by all users)
+RUN pip install --no-cache-dir --target=/install -r requirements.txt
 
 # Stage 2: Runtime - Minimal production image
 FROM python:3.11-slim
@@ -30,12 +30,11 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Set working directory
 WORKDIR /app
 
-# Copy Python dependencies from builder
-COPY --from=builder /root/.local /root/.local
+# Copy Python dependencies from builder to system location
+COPY --from=builder /install /usr/local/lib/python3.11/site-packages
 
-# Make sure scripts in .local are usable
-ENV PATH=/root/.local/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
