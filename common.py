@@ -28,17 +28,24 @@ UTC8 = timezone(timedelta(hours=8))
 # Configure structured logging
 def setup_logging(log_file: str = "logs/monitor.log", level: int = logging.INFO):
     """Setup structured logging with file and console handlers"""
-    # Create logs directory if it doesn't exist
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    handlers = [logging.StreamHandler()]
+
+    # Try to add file handler, fall back to console only if permission denied
+    try:
+        # Create logs directory if it doesn't exist
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        # Add file handler
+        handlers.append(logging.FileHandler(log_file))
+    except (PermissionError, OSError) as e:
+        # Fall back to console only if file logging fails
+        print(f"Warning: Could not create log file '{log_file}': {e}")
+        print("Logging to console only.")
 
     # Configure logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
         level=level,
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
+        handlers=handlers
     )
     return logging.getLogger(__name__)
 
