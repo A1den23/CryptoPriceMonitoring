@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Crypto Price Monitoring Bot
-Monitors multiple cryptocurrency prices and sends alerts via Telegram
+Crypto Price Monitoring Bot with WebSocket Support
+Monitors multiple cryptocurrency prices in real-time via WebSocket and sends alerts via Telegram
 
 Usage:
-    python monitor.py              # Run monitoring
+    python monitor.py              # Run monitoring with WebSocket (default)
     python monitor.py --test       # Test volatility alerts
     python monitor.py --status     # Show current status
+    python monitor.py --polling    # Use old polling mode (fallback)
 """
 
 import os
@@ -15,7 +16,7 @@ import time
 import asyncio
 from datetime import datetime, timedelta
 from collections import deque
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from common import (
     setup_logging,
@@ -23,6 +24,7 @@ from common import (
     CoinConfig,
     BinancePriceFetcher,
     AsyncBinancePriceFetcher,
+    BinanceWebSocketClient,
     TelegramNotifier,
     format_price,
     get_coin_display_name,
@@ -49,6 +51,7 @@ class PriceMonitor:
         self.price_history: deque[PriceData] = deque()
         self.last_integer_milestone = None
         self.last_price = None
+        self.update_count = 0
 
     def check_integer_milestone(self, current_price: float) -> bool:
         """Check if price reached an integer milestone using crossing detection"""
@@ -214,6 +217,7 @@ class PriceMonitor:
 
     def check(self, current_price: float) -> str:
         """Check price and return formatted output"""
+        self.update_count += 1
         coin = get_coin_display_name(self.config.symbol)
 
         # Check for integer milestone
@@ -233,8 +237,136 @@ class PriceMonitor:
         return output
 
 
-class MultiCoinMonitor:
-    """Monitor multiple cryptocurrencies with async price fetching"""
+class WebSocketMultiCoinMonitor:
+    """
+    Real-time multi-cryptocurrency monitor using WebSocket
+
+    This class provides real-time price monitoring using Binance WebSocket streams,
+    with automatic reconnection and connection health monitoring.
+    """
+
+    def __init__(self, config: ConfigManager):
+        self.config = config
+        self.notifier = TelegramNotifier()
+
+        # Load configurations for all enabled coins
+        self.monitors: Dict[str, PriceMonitor] = {}
+        self._load_monitors()
+
+        # WebSocket client
+        self.ws_client: Optional[BinanceWebSocketClient] = None
+
+        # Display statistics
+        self.last_print_time = None
+        self.print_interval = 5  # Print status every 5 seconds
+        self._pending_updates: List[str] = []
+
+    def _load_monitors(self):
+        """Load monitors from configuration"""
+        enabled_coins = self.config.get_enabled_coins()
+        for coin_config in enabled_coins:
+            monitor = PriceMonitor(coin_config, self.notifier)
+            self.monitors[coin_config.symbol] = monitor
+            logger.info(f"✓ Loaded {coin_config}")
+
+        if not self.monitors:
+            logger.warning("No coins enabled in configuration!")
+
+    async def _on_price_update(self, symbol: str, price: float):
+        """Callback function for WebSocket price updates"""
+        monitor = self.monitors.get(symbol)
+        if not monitor:
+            return
+
+        # Check price for alerts
+        output = monitor.check(price)
+
+        # Accumulate updates for periodic printing
+        self._pending_updates.append(output)
+
+        # Print updates periodically
+        current_time = datetime.now(UTC8)
+        if (
+            self.last_print_time is None
+            or (current_time - self.last_print_time).total_seconds() >= self.print_interval
+        ):
+            self._print_updates()
+            self.last_print_time = current_time
+
+    def _print_updates(self):
+        """Print accumulated price updates"""
+        if not self._pending_updates:
+            return
+
+        timestamp = datetime.now(UTC8).strftime('%H:%M:%S')
+        logger.info(f"Real-time price updates [{timestamp}]:")
+        for update in self._pending_updates:
+            logger.info(f"  {update}")
+
+        try:
+            print(f"[{timestamp}] Real-time updates:")
+            for update in self._pending_updates:
+                print(f"  {update}")
+            print()
+        except (OSError, IOError):
+            # Handle broken pipe when running in background
+            pass
+
+        self._pending_updates.clear()
+
+    async def run(self):
+        """Start WebSocket monitoring"""
+        print(f"\n{'='*60}")
+        print(f"Starting Multi-Coin Price Monitor (WebSocket Mode)")
+        print(f"{'='*60}")
+        print(f"Monitored coins: {len(self.monitors)}")
+        print(f"Connection: Real-time WebSocket (10-50ms latency)")
+        print(f"{'='*60}\n")
+
+        # Test Telegram connection
+        if not self.notifier.test_connection():
+            logger.warning("Failed to send test message. Check your Telegram configuration.")
+
+        # Get list of symbols to monitor
+        symbols = list(self.monitors.keys())
+
+        # Create WebSocket client
+        self.ws_client = BinanceWebSocketClient(
+            symbols=symbols,
+            on_price_callback=self._on_price_update,
+            reconnect_delay=5.0,
+            ping_interval=30.0,
+            max_reconnect_attempts=None,  # Infinite reconnect
+        )
+
+        try:
+            # Start WebSocket (runs forever until interrupted)
+            await self.ws_client.start()
+
+        except KeyboardInterrupt:
+            logger.info("\nStopping WebSocket monitor...")
+            await self.ws_client.stop()
+            self.notifier.send_message("👋 Crypto Price Monitoring Bot stopped.")
+
+    async def print_statistics(self):
+        """Print WebSocket connection statistics"""
+        if self.ws_client:
+            stats = self.ws_client.get_statistics()
+            print(f"\n📊 WebSocket Statistics:")
+            print(f"  State: {stats['state']}")
+            print(f"  Messages received: {stats['messages_received']}")
+            print(f"  Reconnections: {stats['reconnect_count']}")
+            print(f"  Uptime: {stats['uptime_seconds']:.1f}s")
+            if stats['last_message_time']:
+                print(f"  Last update: {stats['last_message_time']}")
+
+
+class PollingMultiCoinMonitor:
+    """
+    Legacy polling-based monitor (fallback mode)
+
+    Uses HTTP polling instead of WebSocket. Less efficient but more compatible.
+    """
 
     def __init__(self, config: ConfigManager):
         self.config = config
@@ -264,26 +396,14 @@ class MultiCoinMonitor:
 
         return prices
 
-    def check_all_sync(self) -> dict:
-        """Fetch all prices synchronously (fallback)"""
-        fetcher = BinancePriceFetcher()
-        prices = {}
-        for monitor in self.monitors:
-            try:
-                price = fetcher.get_current_price(monitor.config.symbol)
-                prices[monitor.config.symbol] = price
-            except Exception as e:
-                logger.error(f"Failed to fetch {monitor.config.symbol}: {e}")
-                prices[monitor.config.symbol] = None
-        return prices
-
     def run(self):
         """Main monitoring loop with concurrent price fetching"""
         print(f"\n{'='*60}")
-        print(f"Starting Multi-Coin Price Monitor")
+        print(f"Starting Multi-Coin Price Monitor (Polling Mode)")
         print(f"{'='*60}")
         print(f"Monitored coins: {len(self.monitors)}")
         print(f"Check interval: {self.config.check_interval}s")
+        print(f"⚠️  Using polling mode. Consider using WebSocket for better performance.")
         print(f"{'='*60}\n")
 
         # Test Telegram connection
@@ -411,10 +531,21 @@ def main():
         elif arg == "--status":
             show_status()
             return
+        elif arg == "--polling":
+            # Use old polling mode
+            monitor = PollingMultiCoinMonitor(config)
+            monitor.run()
+            return
+        elif arg in ["--help", "-h"]:
+            print(__doc__)
+            return
 
-    # Normal monitoring mode
-    monitor = MultiCoinMonitor(config)
-    monitor.run()
+    # Default: Use WebSocket mode
+    try:
+        monitor = WebSocketMultiCoinMonitor(config)
+        asyncio.run(monitor.run())
+    except KeyboardInterrupt:
+        logger.info("\nShutting down gracefully...")
 
 
 if __name__ == "__main__":
