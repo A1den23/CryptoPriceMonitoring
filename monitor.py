@@ -53,6 +53,10 @@ class PriceMonitor:
         self.last_price = None
         self.last_processed_price = None  # Last price that triggered alerts
 
+        # Milestone notification cooldown tracking (milestone -> last notification time)
+        self.last_milestone_notification_time: Dict[float, datetime] = {}
+        self.milestone_cooldown_seconds = 300  # 5 minutes cooldown for same milestone
+
     def check_integer_milestone(self, current_price: float) -> bool:
         """Check if price reached an integer milestone using crossing detection"""
         threshold = self.config.integer_threshold
@@ -73,10 +77,21 @@ class PriceMonitor:
 
             # Method 1: Crossing detection (优先) - 检测是否跨越了关口线
             if last_milestone != current_milestone:
+                # Check cooldown: skip if we recently notified for this milestone
+                now = datetime.now(UTC8)
+                if current_milestone in self.last_milestone_notification_time:
+                    time_since_last = (now - self.last_milestone_notification_time[current_milestone]).total_seconds()
+                    if time_since_last < self.milestone_cooldown_seconds:
+                        # In cooldown period, skip notification but still update tracking
+                        logger.debug(f"[{coin}] Milestone ${current_milestone:,} in cooldown ({time_since_last:.0f}s ago)")
+                        self.last_price = current_price
+                        return False
+
                 direction = "📈" if current_price > self.last_price else "📉"
 
                 self.last_integer_milestone = current_milestone
                 self.last_price = current_price
+                self.last_milestone_notification_time[current_milestone] = now
 
                 message = (
                     f"🎯 <b>Integer Milestone Alert!</b>\n"
@@ -124,10 +139,21 @@ class PriceMonitor:
 
             # Crossing detection for stablecoins
             if last_milestone != current_milestone:
+                # Check cooldown: skip if we recently notified for this milestone
+                now = datetime.now(UTC8)
+                if current_milestone in self.last_milestone_notification_time:
+                    time_since_last = (now - self.last_milestone_notification_time[current_milestone]).total_seconds()
+                    if time_since_last < self.milestone_cooldown_seconds:
+                        # In cooldown period, skip notification but still update tracking
+                        logger.debug(f"[{coin}] Milestone {format_price(current_milestone)} in cooldown ({time_since_last:.0f}s ago)")
+                        self.last_price = current_price
+                        return False
+
                 direction = "📈" if current_price > self.last_price else "📉"
 
                 self.last_integer_milestone = current_milestone
                 self.last_price = current_price
+                self.last_milestone_notification_time[current_milestone] = now
 
                 message = (
                     f"🎯 <b>Integer Milestone Alert!</b>\n"
