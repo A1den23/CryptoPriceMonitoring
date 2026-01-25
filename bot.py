@@ -14,6 +14,7 @@ from common import (
     setup_logging,
     ConfigManager,
     BinancePriceFetcher,
+    TelegramNotifier,
     format_price,
     get_coin_emoji,
     UTC8,
@@ -34,6 +35,7 @@ class TelegramBot:
             raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 
         self.fetcher = BinancePriceFetcher()
+        self.notifier = TelegramNotifier()
 
         # Create application
         self.application = Application.builder().token(self.config.telegram_bot_token).build()
@@ -330,15 +332,43 @@ def main():
     """Main entry point"""
     # Load configuration
     config = ConfigManager()
+    notifier = TelegramNotifier()
 
     try:
         bot = TelegramBot(config)
+
+        # Send startup notification
+        startup_message = (
+            "🤖 <b>Telegram Interactive Bot Started</b>\n\n"
+            "✅ Bot is now active and ready to serve!\n\n"
+            "💬 <b>Available Commands:</b>\n"
+            "/start - Show welcome menu\n"
+            "/price [coin] - Get specific coin price\n"
+            "/status - Show detailed status\n"
+            "/all - Get all prices\n"
+            "/help - Show help message\n\n"
+            f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        notifier.send_message(startup_message)
+        logger.info("Startup notification sent")
+
+        # Run the bot
         bot.run()
+
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         print("\nPlease make sure TELEGRAM_BOT_TOKEN is set in your .env file")
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
+
+        # Send shutdown notification
+        shutdown_message = (
+            "👋 <b>Telegram Interactive Bot Stopped</b>\n\n"
+            "Bot has been shut down gracefully.\n\n"
+            f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        notifier.send_message(shutdown_message)
+        logger.info("Shutdown notification sent")
 
 
 if __name__ == "__main__":
