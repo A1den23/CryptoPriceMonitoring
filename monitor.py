@@ -55,7 +55,7 @@ class PriceMonitor:
 
         # Milestone notification cooldown tracking (milestone -> last notification time)
         self.last_milestone_notification_time: Dict[float, datetime] = {}
-        self.milestone_cooldown_seconds = 30  # 30 seconds cooldown for same milestone
+        self.milestone_cooldown_seconds = 60  # 1 minute cooldown for same milestone
 
     def check_integer_milestone(self, current_price: float) -> bool:
         """Check if price reached an integer milestone using crossing detection"""
