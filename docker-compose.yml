@@ -1,7 +1,13 @@
+# Docker Compose configuration for Crypto Price Monitoring Bot
+# Version 3.8 syntax for better compatibility
+version: "3.8"
+
 services:
   # 价格监控服务
   crypto-monitor:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: crypto-monitor
     restart: unless-stopped
     command: ["python", "monitor.py"]
@@ -21,10 +27,30 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://api.binance.com/api/v3/ping', timeout=5).raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # 安全选项
+    security_opt:
+      - no-new-privileges:true
+    # 只读根文件系统 (可选，需要时移除)
+    # read_only: true
 
   # Telegram 交互 Bot 服务
   crypto-bot:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: crypto-bot
     restart: unless-stopped
     command: ["python", "bot.py"]
@@ -44,7 +70,31 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://api.binance.com/api/v3/ping', timeout=5).raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # 安全选项
+    security_opt:
+      - no-new-privileges:true
+    # 依赖关系
+    depends_on:
+      crypto-monitor:
+        condition: service_healthy
 
 networks:
   crypto-network:
     driver: bridge
+    # 网络配置
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

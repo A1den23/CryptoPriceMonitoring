@@ -4,43 +4,39 @@ Telegram Interactive Bot
 Provides interactive commands and buttons to query cryptocurrency prices
 """
 
-import os
-import logging
-from datetime import datetime, timezone, timedelta
+import asyncio
+from datetime import datetime
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from dotenv import load_dotenv
 
-# Import from existing monitor module
-from monitor import BinancePriceFetcher, CoinConfig, format_price_for_display
-
-# Load environment variables
-load_dotenv()
-
-# UTC+8 Timezone
-UTC8 = timezone(timedelta(hours=8))
-
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+from common import (
+    setup_logging,
+    ConfigManager,
+    BinancePriceFetcher,
+    format_price,
+    get_coin_emoji,
+    UTC8,
+    logger
 )
-logger = logging.getLogger(__name__)
+
+# Setup logging
+setup_logging(log_file="logs/bot.log")
 
 
 class TelegramBot:
-    """Telegram Interactive Bot"""
+    """Telegram Interactive Bot with shared common module"""
 
-    def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN")
-        if not self.token:
+    def __init__(self, config: ConfigManager):
+        self.config = config
+
+        if not self.config.telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 
         self.fetcher = BinancePriceFetcher()
-        self.coin_names = ["BTC", "ETH", "SOL", "USD1"]
 
         # Create application
-        self.application = Application.builder().token(self.token).build()
+        self.application = Application.builder().token(self.config.telegram_bot_token).build()
 
         # Register handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
@@ -49,6 +45,8 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("all", self.all_prices_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
+
+        logger.info("Telegram Bot initialized successfully")
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -63,18 +61,24 @@ class TelegramBot:
             "Or click the buttons below for quick access! 👇"
         )
 
-        # Create inline keyboard
+        # Create inline keyboard with enabled coins
         keyboard = [
-            [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")],
-            [
-                InlineKeyboardButton("₿ BTC", callback_data="price_BTC"),
-                InlineKeyboardButton("Ξ ETH", callback_data="price_ETH"),
-            ],
-            [
-                InlineKeyboardButton("◎ SOL", callback_data="price_SOL"),
-                InlineKeyboardButton("$1 USD1", callback_data="price_USD1"),
-            ],
+            [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")]
         ]
+
+        # Add coin buttons in rows of 2
+        enabled_coins = self.config.get_enabled_coins()
+        coin_buttons = []
+        for coin_config in enabled_coins:
+            emoji = get_coin_emoji(coin_config.coin_name)
+            coin_buttons.append(
+                InlineKeyboardButton(f"{emoji} {coin_config.coin_name}", callback_data=f"price_{coin_config.coin_name}")
+            )
+
+        # Group buttons into rows of 2
+        for i in range(0, len(coin_buttons), 2):
+            keyboard.append(coin_buttons[i:i+2])
+
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_text(
@@ -100,10 +104,9 @@ class TelegramBot:
         )
 
         # Add enabled coins
-        for coin_name in self.coin_names:
-            config = CoinConfig(coin_name)
-            if config.enabled:
-                help_message += f"  • {coin_name}: {config.symbol}\n"
+        enabled_coins = self.config.get_enabled_coins()
+        for coin_config in enabled_coins:
+            help_message += f"  • {coin_config.coin_name}: {coin_config.symbol}\n"
 
         await update.message.reply_text(help_message, parse_mode="HTML", disable_notification=False)
 
@@ -116,17 +119,17 @@ class TelegramBot:
             await update.message.reply_text(
                 "❌ Please specify a coin.\n"
                 "Example: /price BTC\n\n"
-                "Available coins: BTC, ETH, SOL, USD1",
+                f"Available coins: {', '.join(self.config.coin_names)}",
                 parse_mode="HTML",
                 disable_notification=False
             )
             return
 
         # Check if coin is valid
-        if coin not in self.coin_names:
+        if coin not in self.config.coin_names:
             await update.message.reply_text(
                 f"❌ Unknown coin: {coin}\n\n"
-                f"Available coins: {', '.join(self.coin_names)}",
+                f"Available coins: {', '.join(self.config.coin_names)}",
                 parse_mode="HTML",
                 disable_notification=False
             )
@@ -139,28 +142,34 @@ class TelegramBot:
         """Handle /status command - show detailed status"""
         status_message = "📊 <b>Crypto Monitor Status</b>\n\n"
 
-        has_enabled = False
-        for coin_name in self.coin_names:
-            config = CoinConfig(coin_name)
-            if config.enabled:
-                has_enabled = True
-                price = self.fetcher.get_current_price(config.symbol)
+        enabled_coins = self.config.get_enabled_coins()
+        if not enabled_coins:
+            status_message += "❌ No coins are currently enabled!"
+            status_message += f"\n\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            await update.message.reply_text(status_message, parse_mode="HTML", disable_notification=False)
+            return
+
+        for coin_config in enabled_coins:
+            try:
+                price = self.fetcher.get_current_price(coin_config.symbol)
 
                 # Format threshold
-                if config.integer_threshold >= 1:
-                    threshold_str = f"${int(config.integer_threshold):,}"
+                if coin_config.integer_threshold >= 1:
+                    threshold_str = f"${int(coin_config.integer_threshold):,}"
                 else:
-                    threshold_str = f"${config.integer_threshold}"
+                    threshold_str = f"${coin_config.integer_threshold}"
+
+                emoji = get_coin_emoji(coin_config.coin_name)
 
                 status_message += (
-                    f"🪙 <b>{coin_name}</b> ({config.symbol})\n"
-                    f"   💰 Price: {format_price_for_display(price) if price else '❌ N/A'}\n"
+                    f"{emoji} <b>{coin_config.coin_name}</b> ({coin_config.symbol})\n"
+                    f"   💰 Price: {format_price(price) if price else '❌ N/A'}\n"
                     f"   📍 Milestone: every {threshold_str}\n"
-                    f"   📊 Volatility Alert: {config.volatility_percent}%/{config.volatility_window}s\n\n"
+                    f"   📊 Volatility Alert: {coin_config.volatility_percent}%/{coin_config.volatility_window}s\n\n"
                 )
-
-        if not has_enabled:
-            status_message += "❌ No coins are currently enabled!"
+            except Exception as e:
+                logger.error(f"Error fetching status for {coin_config.coin_name}: {e}")
+                status_message += f"❌ <b>{coin_config.coin_name}</b>: Error fetching data\n\n"
 
         status_message += f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
 
@@ -170,20 +179,24 @@ class TelegramBot:
         """Handle /all command - show all prices"""
         message = "💰 <b>Current Prices</b>\n\n"
 
-        has_enabled = False
-        for coin_name in self.coin_names:
-            config = CoinConfig(coin_name)
-            if config.enabled:
-                has_enabled = True
-                price = self.fetcher.get_current_price(config.symbol)
-                if price:
-                    emoji = {"BTC": "₿", "ETH": "Ξ", "SOL": "◎", "USD1": "$1"}.get(coin_name, "🪙")
-                    message += f"{emoji} <b>{coin_name}</b>: {format_price_for_display(price)}\n"
-                else:
-                    message += f"❌ <b>{coin_name}</b>: Failed to fetch\n"
-
-        if not has_enabled:
+        enabled_coins = self.config.get_enabled_coins()
+        if not enabled_coins:
             message += "❌ No coins are currently enabled!"
+            message += f"\n\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            await update.message.reply_text(message, parse_mode="HTML", disable_notification=False)
+            return
+
+        for coin_config in enabled_coins:
+            try:
+                price = self.fetcher.get_current_price(coin_config.symbol)
+                if price:
+                    emoji = get_coin_emoji(coin_config.coin_name)
+                    message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
+                else:
+                    message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
+            except Exception as e:
+                logger.error(f"Error fetching price for {coin_config.coin_name}: {e}")
+                message += f"❌ <b>{coin_config.coin_name}</b>: Error\n"
 
         message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
 
@@ -200,15 +213,18 @@ class TelegramBot:
             # Send all prices as new message
             message = "💰 <b>Current Prices</b>\n\n"
 
-            for coin_name in self.coin_names:
-                config = CoinConfig(coin_name)
-                if config.enabled:
-                    price = self.fetcher.get_current_price(config.symbol)
+            enabled_coins = self.config.get_enabled_coins()
+            for coin_config in enabled_coins:
+                try:
+                    price = self.fetcher.get_current_price(coin_config.symbol)
                     if price:
-                        emoji = {"BTC": "₿", "ETH": "Ξ", "SOL": "◎", "USD1": "$1"}.get(coin_name, "🪙")
-                        message += f"{emoji} <b>{coin_name}</b>: {format_price_for_display(price)}\n"
+                        emoji = get_coin_emoji(coin_config.coin_name)
+                        message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
                     else:
-                        message += f"❌ <b>{coin_name}</b>: Failed to fetch\n"
+                        message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
+                except Exception as e:
+                    logger.error(f"Error fetching price for {coin_config.coin_name}: {e}")
+                    message += f"❌ <b>{coin_config.coin_name}</b>: Error\n"
 
             message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
 
@@ -222,9 +238,22 @@ class TelegramBot:
 
     async def send_price_update(self, chat_id, coin_name, message=None):
         """Send price update for a specific coin"""
-        config = CoinConfig(coin_name)
+        coin_config = self.config.get_coin_config(coin_name)
 
-        if not config.enabled:
+        if not coin_config:
+            msg = f"❌ {coin_name} is not configured."
+            if message:
+                await message.edit_text(text=msg, parse_mode="HTML")
+            else:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text=msg,
+                    parse_mode="HTML",
+                    disable_notification=False
+                )
+            return
+
+        if not coin_config.enabled:
             msg = f"❌ {coin_name} is not enabled in configuration."
             if message:
                 await message.edit_text(text=msg, parse_mode="HTML")
@@ -237,37 +266,50 @@ class TelegramBot:
                 )
             return
 
-        price = self.fetcher.get_current_price(config.symbol)
+        try:
+            price = self.fetcher.get_current_price(coin_config.symbol)
 
-        if price:
-            emoji = {"BTC": "₿", "ETH": "Ξ", "SOL": "◎", "USD1": "$1"}.get(coin_name, "🪙")
+            if price:
+                emoji = get_coin_emoji(coin_name)
 
-            response = (
-                f"{emoji} <b>{coin_name}</b> Price Update\n"
-                f"💰 Current: {format_price_for_display(price)}\n"
-                f"📈 Symbol: {config.symbol}\n"
-                f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-
-            # Add keyboard with refresh button
-            keyboard = [
-                [InlineKeyboardButton(f"🔄 Refresh {coin_name}", callback_data=f"price_{coin_name}")],
-                [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            if message:
-                await message.edit_text(text=response, parse_mode="HTML", reply_markup=reply_markup)
-            else:
-                await self.application.bot.send_message(
-                    chat_id=chat_id,
-                    text=response,
-                    parse_mode="HTML",
-                    reply_markup=reply_markup,
-                    disable_notification=False
+                response = (
+                    f"{emoji} <b>{coin_name}</b> Price Update\n"
+                    f"💰 Current: {format_price(price)}\n"
+                    f"📈 Symbol: {coin_config.symbol}\n"
+                    f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-        else:
-            error_msg = f"❌ Failed to fetch price for {coin_name}"
+
+                # Add keyboard with refresh button
+                keyboard = [
+                    [InlineKeyboardButton(f"🔄 Refresh {coin_name}", callback_data=f"price_{coin_name}")],
+                    [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                if message:
+                    await message.edit_text(text=response, parse_mode="HTML", reply_markup=reply_markup)
+                else:
+                    await self.application.bot.send_message(
+                        chat_id=chat_id,
+                        text=response,
+                        parse_mode="HTML",
+                        reply_markup=reply_markup,
+                        disable_notification=False
+                    )
+            else:
+                error_msg = f"❌ Failed to fetch price for {coin_name}"
+                if message:
+                    await message.edit_text(text=error_msg, parse_mode="HTML")
+                else:
+                    await self.application.bot.send_message(
+                        chat_id=chat_id,
+                        text=error_msg,
+                        parse_mode="HTML",
+                        disable_notification=False
+                    )
+        except Exception as e:
+            logger.error(f"Error sending price update for {coin_name}: {e}")
+            error_msg = f"❌ Error fetching price for {coin_name}"
             if message:
                 await message.edit_text(text=error_msg, parse_mode="HTML")
             else:
@@ -280,17 +322,20 @@ class TelegramBot:
 
     def run(self):
         """Start the bot"""
-        logger.info("Starting Telegram Bot...")
+        logger.info("Starting Telegram Bot polling...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def main():
     """Main entry point"""
+    # Load configuration
+    config = ConfigManager()
+
     try:
-        bot = TelegramBot()
+        bot = TelegramBot(config)
         bot.run()
     except ValueError as e:
-        print(f"Error: {e}")
+        logger.error(f"Configuration error: {e}")
         print("\nPlease make sure TELEGRAM_BOT_TOKEN is set in your .env file")
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")

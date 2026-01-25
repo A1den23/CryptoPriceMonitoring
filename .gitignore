@@ -36,6 +36,7 @@ __pycache__/
 # Logs
 *.log
 monitor.log
+logs/
 
 # IDE
 .vscode/
