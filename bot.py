@@ -281,11 +281,29 @@ class TelegramBot:
                     f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
-                # Add keyboard with refresh button
+                # Create keyboard with buttons
                 keyboard = [
                     [InlineKeyboardButton(f"🔄 Refresh {coin_name}", callback_data=f"price_{coin_name}")],
                     [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")],
                 ]
+
+                # Add buttons for other coins (exclude current coin)
+                enabled_coins = self.config.get_enabled_coins()
+                other_coins = [c for c in enabled_coins if c.coin_name != coin_name]
+
+                # Add other coin buttons in rows of 2
+                if other_coins:
+                    coin_buttons = []
+                    for coin in other_coins:
+                        coin_emoji = get_coin_emoji(coin.coin_name)
+                        coin_buttons.append(
+                            InlineKeyboardButton(f"{coin_emoji} {coin.coin_name}", callback_data=f"price_{coin.coin_name}")
+                        )
+
+                    # Group into rows of 2
+                    for i in range(0, len(coin_buttons), 2):
+                        keyboard.append(coin_buttons[i:i+2])
+
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 if message:
