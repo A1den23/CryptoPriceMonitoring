@@ -105,30 +105,6 @@ class PriceMonitor:
                 logger.info(f"[{coin}] Crossed milestone: ${current_milestone:,}")
                 return True
 
-            # Method 2: Proximity detection (兜底) - 价格非常接近关口时也触发
-            if threshold >= 1000:
-                proximity = 5
-            elif threshold >= 100:
-                proximity = 2
-            else:
-                proximity = 0.1
-
-            if abs(current_price - current_milestone) < proximity:
-                if current_milestone != self.last_integer_milestone:
-                    self.last_integer_milestone = current_milestone
-
-                    message = (
-                        f"🎯 <b>Near Integer Milestone!</b>\n"
-                        f"🪙 {self.config.symbol}\n"
-                        f"💰 Price: {format_price(current_price)}\n"
-                        f"📍 Milestone: ${current_milestone:,}\n"
-                        f"📏 Distance: {format_price(abs(current_price - current_milestone))} away\n"
-                        f"🕐 {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                    self.notifier.send_message(message)
-                    logger.info(f"[{coin}] Near milestone: ${current_milestone:,}")
-                    return True
-
         else:
             # For small thresholds (< 1), use precise checking for stablecoins (USD1)
             offset = current_price - 1.0
@@ -166,23 +142,6 @@ class PriceMonitor:
                 self.notifier.send_message(message)
                 logger.info(f"[{coin}] Crossed milestone: {format_price(current_milestone)}")
                 return True
-
-            # Proximity detection for stablecoins (within 10% of threshold)
-            if abs(current_price - current_milestone) < threshold * 0.1:
-                if current_milestone != self.last_integer_milestone:
-                    self.last_integer_milestone = current_milestone
-
-                    message = (
-                        f"🎯 <b>Near Integer Milestone!</b>\n"
-                        f"🪙 {self.config.symbol}\n"
-                        f"💰 Price: {format_price(current_price)}\n"
-                        f"📍 Milestone: {format_price(current_milestone)}\n"
-                        f"📏 Distance: {format_price(abs(current_price - current_milestone))} away\n"
-                        f"🕐 {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                    self.notifier.send_message(message)
-                    logger.info(f"[{coin}] Near milestone: {format_price(current_milestone)}")
-                    return True
 
         # Update last price for next iteration
         self.last_price = current_price
