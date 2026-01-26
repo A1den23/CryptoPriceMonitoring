@@ -55,7 +55,7 @@ class PriceMonitor:
 
         # Milestone notification cooldown tracking (milestone -> last notification time)
         self.last_milestone_notification_time: Dict[float, datetime] = {}
-        self.milestone_cooldown_seconds = 60  # 1 minute cooldown for same milestone
+        self.milestone_cooldown_seconds = 180  # 3 minutes cooldown for same milestone
 
         # Direction-based cooldown tracking (prevent spam from oscillation)
         self.last_up_notification_time: Optional[datetime] = None
