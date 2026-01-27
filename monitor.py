@@ -99,7 +99,6 @@ class PriceMonitor:
                     f"🎯 <b>Integer Milestone Alert!</b>\n"
                     f"🪙 {self.config.symbol}\n"
                     f"💰 Price: {format_price(current_price)}\n"
-                    f"📍 Milestone: ${current_milestone:,}\n"
                     f"{direction} Direction: {'Up' if direction == '📈' else 'Down'}\n"
                     f"🕐 {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
                 )
@@ -139,7 +138,6 @@ class PriceMonitor:
                     f"🎯 <b>Integer Milestone Alert!</b>\n"
                     f"🪙 {self.config.symbol}\n"
                     f"💰 Price: {format_price(current_price)}\n"
-                    f"📍 Milestone: {format_price(current_milestone)}\n"
                     f"{direction} Direction: {'Up' if direction == '📈' else 'Down'}\n"
                     f"🕐 {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
                 )
