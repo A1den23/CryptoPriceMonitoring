@@ -52,6 +52,3 @@ README.md
 .dockerignore
 Dockerfile
 docker-compose.yml
-
-# claude
-.claude

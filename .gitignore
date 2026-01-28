@@ -32,6 +32,7 @@ venv/
 .env/
 __pycache__/
 *.pyc
+.env
 
 # Logs
 *.log
@@ -48,3 +49,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# claude
+.claude
