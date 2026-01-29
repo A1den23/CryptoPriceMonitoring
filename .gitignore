@@ -52,3 +52,10 @@ Thumbs.db
 
 # claude
 .claude
+
+# Test reports (temporary files)
+TEST_REPORT.md
+DOCKER_TEST_REPORT.md
+test_code.py
+*_TEST_REPORT.md
+test_*.py
