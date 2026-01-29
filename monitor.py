@@ -135,54 +135,104 @@ class PriceMonitor:
         return False
 
     def check_volatility(self, current_price: float) -> Optional[str]:
-        """Check if price volatility exceeds threshold within time window"""
+        """
+        Enhanced volatility check using multiple metrics:
+        1. Standard deviation (measures price dispersion)
+        2. Cumulative volatility (sum of all price movements)
+        3. Min/max range (original method)
+        4. Volatility acceleration (rate of change)
+        """
         current_time = datetime.now(UTC8)
 
         # Add current price to history
         self.price_history.append(PriceData(current_price, current_time))
 
-        # Remove old data outside the time window
+        # Remove old data outside the time window (sliding window, no clearing)
         cutoff_time = current_time - timedelta(seconds=self.config.volatility_window)
         while self.price_history and self.price_history[0].timestamp < cutoff_time:
             self.price_history.popleft()
 
-        # Need at least 2 data points to calculate volatility
-        if len(self.price_history) < 2:
+        # Need at least 3 data points for meaningful statistics
+        if len(self.price_history) < 3:
             return None
 
-        # Calculate min and max prices in the window
         prices = [p.price for p in self.price_history]
+
+        # Metric 1: Standard deviation (relative to mean price)
+        mean_price = sum(prices) / len(prices)
+        variance = sum((p - mean_price) ** 2 for p in prices) / len(prices)
+        std_dev = variance ** 0.5
+        std_dev_pct = (std_dev / mean_price) * 100 if mean_price > 0 else 0
+
+        # Metric 2: Cumulative volatility (sum of absolute price changes)
+        cumulative_change = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices)))
+        cumulative_volatility_pct = (cumulative_change / prices[0]) * 100 if prices[0] > 0 else 0
+
+        # Metric 3: Min/max range (original method)
         min_price = min(prices)
         max_price = max(prices)
+        range_volatility_pct = ((max_price - min_price) / min_price) * 100 if min_price > 0 else 0
 
-        # Calculate volatility percentage
-        if min_price > 0:
-            volatility = ((max_price - min_price) / min_price) * 100
+        # Metric 4: Volatility acceleration (rate of change in recent movements)
+        if len(prices) >= 4:
+            recent_changes = [abs(prices[i] - prices[i-1]) for i in range(-4, 0)]
+            acceleration = max(recent_changes) / (sum(recent_changes) / len(recent_changes)) if sum(recent_changes) > 0 else 1
         else:
-            return None
+            acceleration = 1
 
-        # Return volatility info for display
-        volatility_info = f"{volatility:.2f}%/{len(self.price_history)}pts"
+        # Determine if volatility is high (any metric exceeds threshold)
+        # Use lower threshold for std_dev (more sensitive) and cumulative (catches rapid movements)
+        threshold = self.config.volatility_percent
 
-        if volatility >= self.config.volatility_percent:
+        is_volatile = (
+            std_dev_pct >= threshold * 0.7 or  # 70% of threshold for std dev (balanced sensitivity)
+            cumulative_volatility_pct >= threshold * 1.2 or  # 120% for cumulative
+            range_volatility_pct >= threshold or  # 100% for range (original)
+            (acceleration >= 2.0 and std_dev_pct >= threshold * 0.3)  # High acceleration with some volatility
+        )
+
+        # Create detailed volatility info for display
+        volatility_info = f"σ:{std_dev_pct:.2f}% Σ:{cumulative_volatility_pct:.2f}% R:{range_volatility_pct:.2f}%"
+
+        # Cooldown tracking: only alert if enough time passed since last alert
+        if self.last_milestone_notification_time:
+            time_since_last = (current_time - self.last_milestone_notification_time).total_seconds()
+            # Use balanced cooldown for volatility (60 seconds to prevent alert fatigue)
+            volatility_cooldown = min(self.milestone_cooldown_seconds, 60)
+            if time_since_last < volatility_cooldown:
+                return volatility_info
+
+        if is_volatile:
             change = current_price - self.price_history[0].price
             change_percent = (change / self.price_history[0].price) * 100
             direction = "📈" if change > 0 else "📉"
             coin = get_coin_display_name(self.config.symbol)
 
+            # Determine primary reason for alert
+            reasons = []
+            if std_dev_pct >= threshold * 0.7:
+                reasons.append(f"Std Dev: {std_dev_pct:.2f}%")
+            if cumulative_volatility_pct >= threshold * 1.2:
+                reasons.append(f"Cumulative: {cumulative_volatility_pct:.2f}%")
+            if range_volatility_pct >= threshold:
+                reasons.append(f"Range: {range_volatility_pct:.2f}%")
+            if acceleration >= 2.0 and std_dev_pct >= threshold * 0.3:
+                reasons.append(f"Acceleration: {acceleration:.1f}x")
+
             message = (
                 f"🚨 <b>High Volatility Alert!</b>\n"
                 f"🪙 {self.config.symbol}\n"
                 f"💰 Current: {format_price(current_price)}\n"
-                f"📊 Volatility: {volatility:.2f}% in {self.config.volatility_window}s\n"
-                f"{direction} Change: {change_percent:+.2f}%\n"
-                f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+                f"📊 Window: {self.config.volatility_window}s ({len(self.price_history)} pts)\n"
+                f"📈 Metrics: {', '.join(reasons)}\n"
+                f"{direction} Net Change: {change_percent:+.2f}%\n"
+                f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}"
             )
             self.notifier.send_message(message)
-            logger.info(f"[{coin}] High volatility: {volatility:.2f}%")
+            logger.info(f"[{coin}] High volatility - {', '.join(reasons)}")
 
-            # Clear history to avoid duplicate alerts
-            self.price_history.clear()
+            # Update last notification time (but don't clear history - use sliding window)
+            self.last_milestone_notification_time = current_time
             return volatility_info
 
         return volatility_info
