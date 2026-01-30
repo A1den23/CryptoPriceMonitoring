@@ -7,6 +7,7 @@ Provides interactive commands and buttons to query cryptocurrency prices
 import asyncio
 import signal
 from datetime import datetime
+from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -53,7 +54,29 @@ class TelegramBot:
         self._shutdown_requested = False
         self._setup_signal_handlers()
 
+        # Track start time
+        self.start_time: Optional[datetime] = None
+
         logger.info("Telegram Bot initialized successfully")
+
+    def _format_uptime(self) -> str:
+        """Format uptime duration"""
+        if not self.start_time:
+            return "Unknown"
+
+        now = datetime.now(UTC8)
+        uptime_seconds = (now - self.start_time).total_seconds()
+
+        hours = int(uptime_seconds // 3600)
+        minutes = int((uptime_seconds % 3600) // 60)
+        seconds = int(uptime_seconds % 60)
+
+        if hours > 0:
+            return f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            return f"{minutes}m {seconds}s"
+        else:
+            return f"{seconds}s"
 
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown"""
@@ -193,7 +216,10 @@ class TelegramBot:
                 logger.error(f"Error fetching status for {coin_config.coin_name}: {e}")
                 status_message += f"❌ <b>{coin_config.coin_name}</b>: Error fetching data\n\n"
 
-        status_message += f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+        # Add uptime and timestamp
+        uptime = self._format_uptime()
+        status_message += f"\n⌛ Uptime: {uptime}"
+        status_message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
 
         await update.message.reply_text(status_message, parse_mode="HTML", disable_notification=False)
 
@@ -363,6 +389,10 @@ class TelegramBot:
     async def run_async(self):
         """Start the bot asynchronously"""
         logger.info("Starting Telegram Bot polling...")
+
+        # Record start time
+        self.start_time = datetime.now(UTC8)
+
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling(

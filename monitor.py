@@ -183,7 +183,7 @@ class PriceMonitor:
 
         is_volatile = (
             std_dev_pct >= threshold * 0.7 or  # 70% of threshold for std dev (balanced sensitivity)
-            cumulative_volatility_pct >= threshold * 1.35 or  # 135% for cumulative
+            cumulative_volatility_pct >= threshold * 1.5 or  # 150% for cumulative
             range_volatility_pct >= threshold or  # 100% for range (original)
             (acceleration >= 2.0 and std_dev_pct >= threshold * 0.3)  # High acceleration with some volatility
         )
