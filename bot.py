@@ -5,6 +5,7 @@ Provides interactive commands and buttons to query cryptocurrency prices
 """
 
 import asyncio
+import signal
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -48,7 +49,30 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("all", self.all_prices_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
+        # Shutdown handling
+        self._shutdown_requested = False
+        self._setup_signal_handlers()
+
         logger.info("Telegram Bot initialized successfully")
+
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown"""
+        self._original_sigint = signal.signal(signal.SIGINT, self._signal_handler)
+        self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
+        logger.debug("Signal handlers registered (bot)")
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals (SIGINT, SIGTERM)"""
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
+        self._shutdown_requested = True
+
+        # Signal the application to stop
+        if hasattr(self.application, 'stop_running'):
+            asyncio.create_task(self.application.stop_running())
+
+        # Restore original signal handler
+        signal.signal(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -373,11 +397,22 @@ def main():
         # Run the bot
         bot.run()
 
+        # Send shutdown notification if graceful shutdown was requested
+        if bot._shutdown_requested:
+            logger.info("Bot stopped via signal")
+            shutdown_message = (
+                "👋 <b>Telegram Interactive Bot Stopped</b>\n\n"
+                "Bot has been shut down gracefully.\n\n"
+                f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            notifier.send_message(shutdown_message)
+            logger.info("Shutdown notification sent")
+
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         print("\nPlease make sure TELEGRAM_BOT_TOKEN is set in your .env file")
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("Bot stopped by user (KeyboardInterrupt)")
 
         # Send shutdown notification
         shutdown_message = (

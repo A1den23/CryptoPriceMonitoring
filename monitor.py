@@ -7,13 +7,11 @@ Usage:
     python monitor.py              # Run monitoring with WebSocket (default)
     python monitor.py --test       # Test volatility alerts
     python monitor.py --status     # Show current status
-    python monitor.py --polling    # Use old polling mode (fallback)
 """
 
-import os
 import sys
-import time
 import asyncio
+import signal
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List, Dict
@@ -23,7 +21,6 @@ from common import (
     ConfigManager,
     CoinConfig,
     BinancePriceFetcher,
-    AsyncBinancePriceFetcher,
     BinanceWebSocketClient,
     TelegramNotifier,
     format_price,
@@ -301,6 +298,10 @@ class WebSocketMultiCoinMonitor:
         self.print_interval = 5  # Print status every 5 seconds
         self._pending_updates: List[str] = []
 
+        # Shutdown handling
+        self._shutdown_event = asyncio.Event()
+        self._setup_signal_handlers()
+
     def _load_monitors(self):
         """Load monitors from configuration"""
         enabled_coins = self.config.get_enabled_coins()
@@ -311,6 +312,49 @@ class WebSocketMultiCoinMonitor:
 
         if not self.monitors:
             logger.warning("No coins enabled in configuration!")
+
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown"""
+        # Store original signal handlers
+        self._original_sigint = signal.signal(signal.SIGINT, self._signal_handler)
+        self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
+
+        logger.debug("Signal handlers registered for SIGINT and SIGTERM")
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals (SIGINT, SIGTERM)"""
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
+
+        # Set the shutdown event to stop the WebSocket
+        self._shutdown_event.set()
+
+        # Restore original signal handler to allow immediate force-quit if needed
+        signal.signal(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
+
+    async def _send_shutdown_notification(self):
+        """Send shutdown notification via Telegram"""
+        try:
+            now = datetime.now(UTC8)
+            uptime = "Unknown"
+
+            if self.ws_client:
+                stats = self.ws_client.get_statistics()
+                uptime_seconds = stats.get('uptime_seconds', 0)
+                hours = int(uptime_seconds // 3600)
+                minutes = int((uptime_seconds % 3600) // 60)
+                uptime = f"{hours}h {minutes}m"
+
+            message = (
+                f"👋 <b>Crypto Price Monitoring Bot Stopped</b>\n"
+                f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"⌛ Uptime: {uptime}\n"
+                f"🪙 Monitored: {len(self.monitors)} coin(s)\n"
+                f"📊 Status: Graceful shutdown"
+            )
+            self.notifier.send_message(message)
+        except Exception as e:
+            logger.error(f"Failed to send shutdown notification: {e}")
 
     async def _on_price_update(self, symbol: str, price: float):
         """Callback function for WebSocket price updates"""
@@ -381,13 +425,39 @@ class WebSocketMultiCoinMonitor:
         )
 
         try:
-            # Start WebSocket (runs forever until interrupted)
-            await self.ws_client.start()
+            # Start WebSocket and wait for shutdown signal
+            ws_task = asyncio.create_task(self.ws_client.start())
+            shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+
+            # Wait for either WebSocket to complete or shutdown signal
+            done, pending = await asyncio.wait(
+                [ws_task, shutdown_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            # If shutdown was triggered, handle graceful shutdown
+            if self._shutdown_event.is_set():
+                logger.info("Shutting down gracefully...")
+                await self.ws_client.stop()
+                await self._send_shutdown_notification()
 
         except KeyboardInterrupt:
-            logger.info("\nStopping WebSocket monitor...")
+            logger.info("\nStopping WebSocket monitor (KeyboardInterrupt)...")
             await self.ws_client.stop()
             self.notifier.send_message("👋 Crypto Price Monitoring Bot stopped.")
+        except Exception as e:
+            logger.error(f"Unexpected error in WebSocket monitor: {e}")
+            if self.ws_client:
+                await self.ws_client.stop()
+            raise
 
     async def print_statistics(self):
         """Print WebSocket connection statistics"""
@@ -400,85 +470,6 @@ class WebSocketMultiCoinMonitor:
             print(f"  Uptime: {stats['uptime_seconds']:.1f}s")
             if stats['last_message_time']:
                 print(f"  Last update: {stats['last_message_time']}")
-
-
-class PollingMultiCoinMonitor:
-    """
-    Legacy polling-based monitor (fallback mode)
-
-    Uses HTTP polling instead of WebSocket. Less efficient but more compatible.
-    """
-
-    def __init__(self, config: ConfigManager):
-        self.config = config
-        self.notifier = TelegramNotifier()
-
-        # Load configurations for all enabled coins
-        self.monitors: List[PriceMonitor] = []
-        self._load_monitors()
-
-    def _load_monitors(self):
-        """Load monitors from configuration"""
-        enabled_coins = self.config.get_enabled_coins()
-        for coin_config in enabled_coins:
-            monitor = PriceMonitor(coin_config, self.notifier)
-            self.monitors.append(monitor)
-            logger.info(f"✓ Loaded {coin_config}")
-
-        if not self.monitors:
-            logger.warning("No coins enabled in configuration!")
-
-    async def fetch_all_prices_async(self) -> dict:
-        """Fetch all prices concurrently using async"""
-        symbols = [monitor.config.symbol for monitor in self.monitors]
-
-        async with AsyncBinancePriceFetcher() as fetcher:
-            prices = await fetcher.get_multiple_prices(symbols)
-
-        return prices
-
-    def run(self):
-        """Main monitoring loop with concurrent price fetching"""
-        print(f"\n{'='*60}")
-        print(f"Starting Multi-Coin Price Monitor (Polling Mode)")
-        print(f"{'='*60}")
-        print(f"Monitored coins: {len(self.monitors)}")
-        print(f"Check interval: {self.config.check_interval}s")
-        print(f"⚠️  Using polling mode. Consider using WebSocket for better performance.")
-        print(f"{'='*60}\n")
-
-        # Test Telegram connection
-        if not self.notifier.test_connection():
-            logger.warning("Failed to send test message. Check your Telegram configuration.")
-
-        try:
-            # Create event loop for async operations
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            while True:
-                print(f"[{datetime.now(UTC8).strftime('%H:%M:%S')}] Checking prices...")
-
-                # Fetch prices concurrently
-                prices = loop.run_until_complete(self.fetch_all_prices_async())
-
-                # Check all monitors
-                for monitor in self.monitors:
-                    price = prices.get(monitor.config.symbol)
-                    if price:
-                        output = monitor.check(price)
-                        print(output)
-                    else:
-                        logger.error(f"Failed to get price for {monitor.config.symbol}")
-
-                print()
-                time.sleep(self.config.check_interval)
-
-        except KeyboardInterrupt:
-            logger.info("\nStopping monitor...")
-            self.notifier.send_message("👋 Crypto Price Monitoring Bot stopped.")
-        finally:
-            loop.close()
 
 
 def test_volatility_alert():
@@ -571,11 +562,6 @@ def main():
             return
         elif arg == "--status":
             show_status()
-            return
-        elif arg == "--polling":
-            # Use old polling mode
-            monitor = PollingMultiCoinMonitor(config)
-            monitor.run()
             return
         elif arg in ["--help", "-h"]:
             print(__doc__)
