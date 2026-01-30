@@ -186,7 +186,7 @@ class PriceMonitor:
 
         is_volatile = (
             std_dev_pct >= threshold * 0.7 or  # 70% of threshold for std dev (balanced sensitivity)
-            cumulative_volatility_pct >= threshold * 1.2 or  # 120% for cumulative
+            cumulative_volatility_pct >= threshold * 1.35 or  # 135% for cumulative
             range_volatility_pct >= threshold or  # 100% for range (original)
             (acceleration >= 2.0 and std_dev_pct >= threshold * 0.3)  # High acceleration with some volatility
         )
@@ -197,8 +197,8 @@ class PriceMonitor:
         # Cooldown tracking: only alert if enough time passed since last alert
         if self.last_milestone_notification_time:
             time_since_last = (current_time - self.last_milestone_notification_time).total_seconds()
-            # Use balanced cooldown for volatility (60 seconds to prevent alert fatigue)
-            volatility_cooldown = min(self.milestone_cooldown_seconds, 60)
+            # Use balanced cooldown for volatility (30 seconds to prevent alert fatigue)
+            volatility_cooldown = min(self.milestone_cooldown_seconds, 30)
             if time_since_last < volatility_cooldown:
                 return volatility_info
 
