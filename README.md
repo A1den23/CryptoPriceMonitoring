@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **WebSocket 实时监控** - 10-50ms 超低延迟价格推送（比轮询快 50 倍）
+- **WebSocket 实时监控** - 10-50ms 超低延迟价格推送
 - **自动断线重连** - 网络中断自动恢复，无限重试
 - **心跳保持** - 定期 ping 保持连接活跃
 - **多币种监控** - 同时监控 BTC、ETH、SOL、BNB、USD1 等多个交易对
@@ -13,6 +13,7 @@
 - **波动监控** - 当价格在指定时间内波动超过阈值时发送通知
 - **独立配置** - 每个币种可单独配置监控参数
 - **交互式机器人** - 支持 Telegram 命令和按钮交互查询价格
+- **优雅关闭** - Docker 停止时自动发送通知，包含运行时长统计
 - **重试机制** - API 失败自动重试，指数退避策略
 - **结构化日志** - 文件和控制台双输出，便于调试
 - **优化架构** - 代码模块化，易维护和扩展
@@ -130,7 +131,6 @@ BNB_VOLATILITY_WINDOW_SECONDS=180
 |--------|------|--------|
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | - |
 | `TELEGRAM_CHAT_ID` | 你的 Telegram Chat ID | - |
-| `CHECK_INTERVAL_SECONDS` | 价格检查间隔（秒，仅轮询模式） | `5` |
 | `DEBUG` | 调试模式 | `false` |
 | `COIN_LIST` | 要监控的币种列表（逗号分隔） | `BTC,ETH,SOL,BNB,USD1` |
 
@@ -142,24 +142,6 @@ BNB_VOLATILITY_WINDOW_SECONDS=180
 | `{币种}_INTEGER_THRESHOLD` | 整数关口间隔（支持整数和小数）| `1000` |
 | `{币种}_VOLATILITY_PERCENT` | 触发波动警报的百分比 | `3.0` |
 | `{币种}_VOLATILITY_WINDOW_SECONDS` | 波动计算时间窗口（秒）| `180` |
-
-**全局配置**
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | - |
-| `TELEGRAM_CHAT_ID` | 你的 Telegram Chat ID | - |
-| `CHECK_INTERVAL_SECONDS` | 价格检查间隔（秒，仅轮询模式） | `5` |
-| `DEBUG` | 调试模式 | `false` |
-| `COIN_LIST` | 要监控的币种列表（逗号分隔） | `BTC,ETH,SOL,USD1` |
-
-**币种配置**（每个币种独立的配置）
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `{币种}_ENABLED` | 是否启用该币种监控 | `false` |
-| `{币种}_SYMBOL` | 交易对符号 | `{币种}USDT` |
-| `{币种}_INTEGER_THRESHOLD` | 整数关口间隔（支持整数和小数）| `1000` |
-| `{币种}_VOLATILITY_PERCENT` | 触发波动警报的百分比 | `3.0` |
-| `{币种}_VOLATILITY_WINDOW_SECONDS` | 波动计算时间窗口（秒）| `60` |
 
 #### 配置示例：
 
@@ -225,14 +207,6 @@ Ping handler started (interval: 30.0s)
   Ξ [ETH] $2,947.65 📊0.00%/6pts
   ◎ [SOL] $126.87 📊0.01%/6pts
   $1 [USD1] $1.0012 📊0.00%/2pts
-```
-
-#### 轮询模式（备用）
-
-如果 WebSocket 不可用，可以使用传统轮询模式：
-
-```bash
-python monitor.py --polling
 ```
 
 #### 其他命令
@@ -492,7 +466,7 @@ docker compose logs -f
 docker compose logs -f crypto-monitor  # 监控服务
 docker compose logs -f crypto-bot      # Bot 服务
 
-# 4. 停止所有服务
+# 4. 停止所有服务（会发送优雅关闭通知）
 docker compose down
 
 # 5. 重启特定服务
@@ -527,6 +501,7 @@ docker compose restart crypto-bot
 - **资源限制** - 限制 CPU 和内存使用
 - **自动重启** - 服务崩溃后自动恢复
 - **日志轮转** - 防止日志文件过大
+- **优雅关闭** - 停止时自动发送 Telegram 通知，包含运行统计
 
 ---
 
@@ -540,7 +515,8 @@ docker compose restart crypto-bot
 ### WebSocket 连接失败
 1. 检查网络连接
 2. 查看日志文件 `logs/monitor.log`
-3. 尝试使用轮询模式：`python monitor.py --polling`
+3. 检查防火墙设置（WebSocket 使用 9443 端口）
+4. 重启监控程序
 
 ### 无法获取价格
 1. 检查网络连接
@@ -601,6 +577,13 @@ python monitor.py --status
 ---
 
 ## 更新日志
+
+### v2.2 (2026-01-30)
+- ✅ **优雅关闭** - Docker 停止时自动发送 Telegram 通知
+- ✅ **信号处理** - 添加 SIGTERM/SIGINT 信号处理器
+- ✅ **运行统计** - 停止通知包含运行时长和监控币种数量
+- ✅ **代码简化** - 移除轮询模式，专注 WebSocket 实时监控
+- ✅ **清理代码** - 移除未使用的导入和功能
 
 ### v2.1 (2026-01-29)
 - ✅ **代码重构** - 消除重复代码，减少70%代码量
