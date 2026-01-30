@@ -67,10 +67,6 @@ class TelegramBot:
         logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
         self._shutdown_requested = True
 
-        # Signal the application to stop
-        if hasattr(self.application, 'stop_running'):
-            asyncio.create_task(self.application.stop_running())
-
         # Restore original signal handler
         signal.signal(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
 
@@ -364,10 +360,30 @@ class TelegramBot:
                     disable_notification=False
                 )
 
-    def run(self):
-        """Start the bot"""
+    async def run_async(self):
+        """Start the bot asynchronously"""
         logger.info("Starting Telegram Bot polling...")
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        await self.application.initialize()
+        await self.application.start()
+        await self.application.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+
+        # Keep running until shutdown is requested
+        while not self._shutdown_requested:
+            await asyncio.sleep(0.5)
+
+        # Graceful shutdown
+        logger.info("Stopping Telegram Bot...")
+        await self.application.updater.stop()
+        await self.application.stop()
+        await self.application.shutdown()
+
+    def run(self):
+        """Start the bot (synchronous wrapper)"""
+        logger.info("Starting Telegram Bot polling...")
+        asyncio.run(self.run_async())
 
 
 def main():
