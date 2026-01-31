@@ -10,7 +10,11 @@
 - **多币种监控** - 同时监控 BTC、ETH、SOL、BNB、USD1 等多个交易对
 - **整数关口监控** - 当价格达到整数关口时发送通知（双向监控）
   - **全局冷却机制** - 10分钟冷却期，避免通知轰炸
-- **波动监控** - 当价格在指定时间内波动超过阈值时发送通知
+- **波动监控** - 多指标智能检测系统
+  - **标准差分析** - 价格离散度检测（70% 阈值）
+  - **累积波动** - 所有价格变动累计（150% 阈值）
+  - **范围波动** - 最高/最低价差（100% 阈值）
+  - **波动加速** - 检测波动率急剧上升
 - **独立配置** - 每个币种可单独配置监控参数
 - **交互式机器人** - 支持 Telegram 命令和按钮交互查询价格
 - **优雅关闭** - Docker 停止时自动发送通知，包含运行时长统计
@@ -86,7 +90,7 @@ CHECK_INTERVAL_SECONDS=5
 DEBUG=false
 
 # Coin List (comma-separated, determines which coins to load)
-COIN_LIST=BTC,ETH,SOL,USD1
+COIN_LIST=BTC,ETH,SOL,USD1,BNB
 
 # BTC Configuration
 BTC_ENABLED=true
@@ -99,8 +103,8 @@ BTC_VOLATILITY_WINDOW_SECONDS=180
 ETH_ENABLED=true
 ETH_SYMBOL=ETHUSDT
 ETH_INTEGER_THRESHOLD=100
-ETH_VOLATILITY_PERCENT=2.0
-BTC_VOLATILITY_WINDOW_SECONDS=120
+ETH_VOLATILITY_PERCENT=3.0
+ETH_VOLATILITY_WINDOW_SECONDS=180
 
 # SOL Configuration
 SOL_ENABLED=true
@@ -112,7 +116,7 @@ SOL_VOLATILITY_WINDOW_SECONDS=60
 # USD1 Configuration (Stablecoin - low volatility expected)
 USD1_ENABLED=true
 USD1_SYMBOL=USD1USDT
-USD1_INTEGER_THRESHOLD=0.001  # 精确到0.001
+USD1_INTEGER_THRESHOLD=0.0005  # 精确到0.0005
 USD1_VOLATILITY_PERCENT=0.5
 USD1_VOLATILITY_WINDOW_SECONDS=180
 
@@ -165,7 +169,7 @@ SOL_VOLATILITY_PERCENT=3.0
 SOL_VOLATILITY_WINDOW_SECONDS=60
 
 # 添加新币种（只需在 COIN_LIST 中添加即可）
-COIN_LIST=BTC,ETH,SOL,USD1,DOGE
+COIN_LIST=BTC,ETH,SOL,USD1,BNB,DOGE
 DOGE_ENABLED=true
 DOGE_SYMBOL=DOGEUSDT
 DOGE_INTEGER_THRESHOLD=0.001
@@ -377,6 +381,64 @@ T4    89,995     89000      ✅ 跨越回 89000！📉
 
 ---
 
+## 波动监控说明
+
+系统使用**多指标综合检测**来准确识别异常价格波动：
+
+### 检测指标
+
+| 指标 | 检测内容 | 阈值比例 | 说明 |
+|------|---------|---------|------|
+| **标准差** | 价格离散度 | 70% | 基于平均价格的标准差计算 |
+| **累积波动** | 所有变动累计 | 150% | 累计所有价格变化幅度 |
+| **范围波动** | 最高/最低价差 | 100% | 时间窗口内的极值差 |
+| **波动加速** | 波动率变化率 | 动态 | 检测波动急剧增加 |
+
+### 触发逻辑
+
+- 当**任一指标**超过设定阈值时，即触发波动警报
+- 使用滑动窗口统计，基于最近 N 个价格点（默认 6 个）
+- 不同币种可设置不同的波动阈值和时间窗口
+
+### 各币种波动配置
+
+```env
+# BTC: 180秒内波动3%提醒
+BTC_VOLATILITY_PERCENT=3.0
+BTC_VOLATILITY_WINDOW_SECONDS=180
+
+# ETH: 180秒内波动3%提醒
+ETH_VOLATILITY_PERCENT=3.0
+ETH_VOLATILITY_WINDOW_SECONDS=180
+
+# SOL: 180秒内波动3%提醒
+SOL_VOLATILITY_PERCENT=3.0
+SOL_VOLATILITY_WINDOW_SECONDS=180
+
+# USD1: 180秒内波动0.5%提醒（稳定币）
+USD1_VOLATILITY_PERCENT=0.5
+USD1_VOLATILITY_WINDOW_SECONDS=180
+
+# BNB: 180秒内波动3%提醒
+BNB_VOLATILITY_PERCENT=3.0
+BNB_VOLATILITY_WINDOW_SECONDS=180
+```
+
+### 通知消息格式
+
+**波动警报**：
+```
+⚠️ High Volatility Alert!
+🪙 BTCUSDT
+💰 Current: $89,200.50
+📊 Volatility: 3.2% (threshold: 3.0%)
+⏱️ Window: 180s
+📈 Range: $88,500 - $89,200
+🕐 2025-01-25 12:44:32
+```
+
+---
+
 ## 添加新币种
 
 只需要在 `.env` 文件中添加新币种的配置：
@@ -577,6 +639,12 @@ python monitor.py --status
 ---
 
 ## 更新日志
+
+### v2.3 (2026-01-31)
+- ✅ **多指标波动检测** - 标准差、累积波动、范围分析、波动加速
+- ✅ **视觉优化** - 改进波动和关口警报的视觉区分
+- ✅ **配置修复** - 统一 USD1 阈值为 0.0005
+- ✅ **文档更新** - 补充波动监控详细说明和通知格式
 
 ### v2.2 (2026-01-30)
 - ✅ **优雅关闭** - Docker 停止时自动发送 Telegram 通知
