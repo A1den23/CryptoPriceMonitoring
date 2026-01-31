@@ -209,8 +209,8 @@ class PriceMonitor:
         # Cooldown tracking: only alert if enough time passed since last alert
         if self.last_milestone_notification_time:
             time_since_last = (current_time - self.last_milestone_notification_time).total_seconds()
-            # Use balanced cooldown for volatility (15 seconds to prevent alert fatigue)
-            volatility_cooldown = min(self.milestone_cooldown_seconds, 15)
+            # Use balanced cooldown for volatility (30 seconds to prevent alert fatigue)
+            volatility_cooldown = min(self.milestone_cooldown_seconds, 30)
             if time_since_last < volatility_cooldown:
                 return volatility_info
 
@@ -225,7 +225,7 @@ class PriceMonitor:
             if std_dev_pct >= threshold * 0.7:
                 reasons.append(f"Std Dev: {std_dev_pct:.2f}%")
             if cumulative_alert:
-                reasons.append(f"Cumulative: {cumulative_volatility_pct:.2f}% ↑")
+                reasons.append(f"Cumulative: {cumulative_volatility_pct:.2f}%")
             if range_volatility_pct >= threshold:
                 reasons.append(f"Range: {range_volatility_pct:.2f}%")
             if acceleration >= 2.0 and std_dev_pct >= threshold * 0.3:
