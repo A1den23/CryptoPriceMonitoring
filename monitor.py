@@ -86,11 +86,13 @@ class PriceMonitor:
         self.last_price = current_price
         self.last_milestone_notification_time = now
 
+        direction_text = "向上 ↑" if is_up else "向下 ↓"
+
         message = (
-            f"🎯 <b>Integer Milestone Alert!</b>\n"
+            f"🎉🎉【价格里程碑】🎉🎉\n"
             f"🪙 {self.config.symbol}\n"
-            f"💰 Price: {format_price(current_price)}\n"
-            f"{direction} Direction: {'Up' if direction == '📈' else 'Down'}\n"
+            f"💰 价格: {format_price(current_price)}\n"
+            f"{direction} 突破方向: {direction_text}\n"
             f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S')}"
         )
         self.notifier.send_message(message)
@@ -217,13 +219,15 @@ class PriceMonitor:
                 reasons.append(f"Acceleration: {acceleration:.1f}x")
 
             message = (
-                f"🚨 <b>High Volatility Alert!</b>\n"
+                f"⚠️⚠️【波动警报】⚠️⚠️\n"
+                f"━━━━━━━━━━━━━━━━━\n"
                 f"🪙 {self.config.symbol}\n"
-                f"💰 Current: {format_price(current_price)}\n"
-                f"📊 Window: {self.config.volatility_window}s ({len(self.price_history)} pts)\n"
-                f"📈 Metrics: {', '.join(reasons)}\n"
-                f"{direction} Net Change: {change_percent:+.2f}%\n"
-                f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"💰 当前: {format_price(current_price)}\n"
+                f"📊 时间窗口: {self.config.volatility_window}s ({len(self.price_history)} pts)\n"
+                f"⚡️ 触发指标: {', '.join(reasons)}\n"
+                f"{direction} 净变化: {change_percent:+.2f}%\n"
+                f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"━━━━━━━━━━━━━━━━━"
             )
             self.notifier.send_message(message)
             logger.info(f"[{coin}] High volatility - {', '.join(reasons)}")
