@@ -53,9 +53,8 @@ class PriceMonitor:
         self.last_milestone_notification_time: Optional[datetime] = None
         self.milestone_cooldown_seconds = 600  # 10 minutes global cooldown
 
-        # Volatility notification cooldown tracking (independent from milestone cooldown)
-        self.last_volatility_notification_time: Optional[datetime] = None
-        self.volatility_cooldown_seconds = 180  # 3 minutes cooldown for volatility alerts
+        # Volatility tracking - only alert when cumulative volatility is increasing
+        self.last_cumulative_volatility: float = 0.0
 
     def _calculate_milestone(self, price: float, threshold: float) -> float:
         """Calculate the milestone for a given price and threshold"""
@@ -183,24 +182,36 @@ class PriceMonitor:
         else:
             acceleration = 1
 
-        # Determine if volatility is high (any metric exceeds threshold)
-        # Use more conservative thresholds to reduce false positives
+        # Determine if volatility is high - cumulative must be INCREASING to trigger
         threshold = self.config.volatility_percent
 
+        # Cumulative volatility alert logic: dynamic tracking
+        # Check if current value exceeds threshold AND is increasing from last tracked value
+        cumulative_alert = False
+        if cumulative_volatility_pct >= threshold:
+            if cumulative_volatility_pct > self.last_cumulative_volatility:
+                cumulative_alert = True
+
+        # Always update the tracking value (enables dynamic tracking)
+        # This allows notifications when volatility drops then rises again
+        self.last_cumulative_volatility = cumulative_volatility_pct
+
         is_volatile = (
-            std_dev_pct >= threshold * 0.9 or  # 90% of threshold for std dev (less sensitive)
-            cumulative_volatility_pct >= threshold * 1.0 or  # 100% for cumulative (reduced from 150%)
-            range_volatility_pct >= threshold or  # 100% for range (original)
-            (acceleration >= 2.5 and std_dev_pct >= threshold * 0.4)  # Higher acceleration threshold
+            std_dev_pct >= threshold * 0.7 or  # 70% of threshold for std dev
+            cumulative_alert or  # Only when cumulative is INCREASING
+            range_volatility_pct >= threshold or  # 100% for range
+            (acceleration >= 2.0 and std_dev_pct >= threshold * 0.3)  # High acceleration
         )
 
         # Create detailed volatility info for display
         volatility_info = f"σ:{std_dev_pct:.2f}% Σ:{cumulative_volatility_pct:.2f}% R:{range_volatility_pct:.2f}%"
 
-        # Cooldown tracking: only alert if enough time passed since last volatility alert
-        if self.last_volatility_notification_time:
-            time_since_last = (current_time - self.last_volatility_notification_time).total_seconds()
-            if time_since_last < self.volatility_cooldown_seconds:
+        # Cooldown tracking: only alert if enough time passed since last alert
+        if self.last_milestone_notification_time:
+            time_since_last = (current_time - self.last_milestone_notification_time).total_seconds()
+            # Use balanced cooldown for volatility (15 seconds to prevent alert fatigue)
+            volatility_cooldown = min(self.milestone_cooldown_seconds, 15)
+            if time_since_last < volatility_cooldown:
                 return volatility_info
 
         if is_volatile:
@@ -211,10 +222,10 @@ class PriceMonitor:
 
             # Determine primary reason for alert
             reasons = []
-            if std_dev_pct >= threshold * 0.9:
+            if std_dev_pct >= threshold * 0.7:
                 reasons.append(f"Std Dev: {std_dev_pct:.2f}%")
-            if cumulative_volatility_pct >= threshold * 1.0:
-                reasons.append(f"Cumulative: {cumulative_volatility_pct:.2f}%")
+            if cumulative_alert:
+                reasons.append(f"Cumulative: {cumulative_volatility_pct:.2f}% ↑")
             if range_volatility_pct >= threshold:
                 reasons.append(f"Range: {range_volatility_pct:.2f}%")
             if acceleration >= 2.0 and std_dev_pct >= threshold * 0.3:
@@ -234,8 +245,8 @@ class PriceMonitor:
             self.notifier.send_message(message)
             logger.info(f"[{coin}] High volatility - {', '.join(reasons)}")
 
-            # Update last volatility notification time (independent from milestone cooldown)
-            self.last_volatility_notification_time = current_time
+            # Update last notification time (but don't clear history - use sliding window)
+            self.last_milestone_notification_time = current_time
             return volatility_info
 
         return volatility_info
