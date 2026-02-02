@@ -7,7 +7,7 @@
 - **WebSocket 实时监控** - 10-50ms 超低延迟价格推送
 - **自动断线重连** - 网络中断自动恢复，无限重试
 - **心跳保持** - 定期 ping 保持连接活跃
-- **多币种监控** - 同时监控 BTC、ETH、SOL、BNB、USD1 等多个交易对
+- **多币种监控** - 同时监控 BTC、ETH、SOL、USD1 等多个交易对
 - **整数关口监控** - 当价格达到整数关口时发送通知（双向监控）
   - **全局冷却机制** - 10分钟冷却期，避免通知轰炸
 - **波动监控** - 多指标智能检测系统
@@ -90,27 +90,27 @@ CHECK_INTERVAL_SECONDS=5
 DEBUG=false
 
 # Coin List (comma-separated, determines which coins to load)
-COIN_LIST=BTC,ETH,SOL,USD1,BNB
+COIN_LIST=BTC,ETH,SOL,USD1
 
 # BTC Configuration
 BTC_ENABLED=true
 BTC_SYMBOL=BTCUSDT
 BTC_INTEGER_THRESHOLD=1000
-BTC_VOLATILITY_PERCENT=3.0
+BTC_VOLATILITY_PERCENT=4.0
 BTC_VOLATILITY_WINDOW_SECONDS=180
 
 # ETH Configuration
 ETH_ENABLED=true
 ETH_SYMBOL=ETHUSDT
 ETH_INTEGER_THRESHOLD=100
-ETH_VOLATILITY_PERCENT=4.0
+ETH_VOLATILITY_PERCENT=5.0
 ETH_VOLATILITY_WINDOW_SECONDS=180
 
 # SOL Configuration
 SOL_ENABLED=true
 SOL_SYMBOL=SOLUSDT
 SOL_INTEGER_THRESHOLD=10
-SOL_VOLATILITY_PERCENT=4.0
+SOL_VOLATILITY_PERCENT=5.0
 SOL_VOLATILITY_WINDOW_SECONDS=180
 
 # USD1 Configuration (Stablecoin - low volatility expected)
@@ -119,13 +119,6 @@ USD1_SYMBOL=USD1USDT
 USD1_INTEGER_THRESHOLD=0.0005  # 精确到0.0005
 USD1_VOLATILITY_PERCENT=0.5
 USD1_VOLATILITY_WINDOW_SECONDS=180
-
-# BNB Configuration
-BNB_ENABLED=true
-BNB_SYMBOL=BNBUSDT
-BNB_INTEGER_THRESHOLD=10
-BNB_VOLATILITY_PERCENT=4.0
-BNB_VOLATILITY_WINDOW_SECONDS=180
 ```
 
 #### 配置说明：
@@ -136,7 +129,7 @@ BNB_VOLATILITY_WINDOW_SECONDS=180
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | - |
 | `TELEGRAM_CHAT_ID` | 你的 Telegram Chat ID | - |
 | `DEBUG` | 调试模式 | `false` |
-| `COIN_LIST` | 要监控的币种列表（逗号分隔） | `BTC,ETH,SOL,BNB,USD1` |
+| `COIN_LIST` | 要监控的币种列表（逗号分隔） | `BTC,ETH,SOL,USD1` |
 
 **币种配置**（每个币种独立的配置）
 | 配置项 | 说明 | 默认值 |
@@ -150,26 +143,26 @@ BNB_VOLATILITY_WINDOW_SECONDS=180
 #### 配置示例：
 
 ```env
-# BTC: 每$1000提醒，180秒内波动3%提醒
+# BTC: 每$1000提醒，180秒内波动4%提醒
 BTC_ENABLED=true
 BTC_INTEGER_THRESHOLD=1000
-BTC_VOLATILITY_PERCENT=3.0
+BTC_VOLATILITY_PERCENT=4.0
 BTC_VOLATILITY_WINDOW_SECONDS=180
 
-# ETH: 每$100提醒，180秒内波动4%提醒
+# ETH: 每$100提醒，180秒内波动5%提醒
 ETH_ENABLED=true
 ETH_INTEGER_THRESHOLD=100
-ETH_VOLATILITY_PERCENT=4.0
+ETH_VOLATILITY_PERCENT=5.0
 ETH_VOLATILITY_WINDOW_SECONDS=180
 
-# SOL: 每$10提醒，180秒内波动4%提醒
+# SOL: 每$10提醒，180秒内波动5%提醒
 SOL_ENABLED=true
 SOL_INTEGER_THRESHOLD=10
-SOL_VOLATILITY_PERCENT=4.0
+SOL_VOLATILITY_PERCENT=5.0
 SOL_VOLATILITY_WINDOW_SECONDS=180
 
 # 添加新币种（只需在 COIN_LIST 中添加即可）
-COIN_LIST=BTC,ETH,SOL,USD1,BNB,DOGE
+COIN_LIST=BTC,ETH,SOL,USD1,DOGE
 DOGE_ENABLED=true
 DOGE_SYMBOL=DOGEUSDT
 DOGE_INTEGER_THRESHOLD=0.001
@@ -317,8 +310,9 @@ python bot.py
 
 为避免在市场剧烈波动时发送过多通知，系统实施了**全局冷却机制**：
 
-- **冷却时间**: 10分钟（600秒）
-- **适用范围**: 所有整数关口通知
+- **整数关口冷却**: 10分钟（600秒）
+- **波动监控冷却**: 60秒（减少通知频率）
+- **适用范围**: 整数关口通知和波动监控独立冷却
 - **工作原理**: 收到一次关口通知后，10分钟内不再发送任何关口通知
 - **优势**:
   - 避免在价格快速波动时轰炸式通知
@@ -403,30 +397,26 @@ T4    89,995     89000      ✅ 跨越回 89000！📉
 ### 各币种波动配置
 
 ```env
-# BTC: 180秒内波动3%提醒
-BTC_VOLATILITY_PERCENT=3.0
+# BTC: 180秒内波动4%提醒
+BTC_VOLATILITY_PERCENT=4.0
 BTC_VOLATILITY_WINDOW_SECONDS=180
 
-# ETH: 180秒内波动4%提醒
-ETH_VOLATILITY_PERCENT=4.0
+# ETH: 180秒内波动5%提醒
+ETH_VOLATILITY_PERCENT=5.0
 ETH_VOLATILITY_WINDOW_SECONDS=180
 
-# SOL: 180秒内波动4%提醒
-SOL_VOLATILITY_PERCENT=4.0
+# SOL: 180秒内波动5%提醒
+SOL_VOLATILITY_PERCENT=5.0
 SOL_VOLATILITY_WINDOW_SECONDS=180
 
 # USD1: 180秒内波动0.5%提醒（稳定币）
 USD1_VOLATILITY_PERCENT=0.5
 USD1_VOLATILITY_WINDOW_SECONDS=180
-
-# BNB: 180秒内波动4%提醒
-BNB_VOLATILITY_PERCENT=4.0
-BNB_VOLATILITY_WINDOW_SECONDS=180
 ```
 
 **配置说明：**
-- **BTC**：波动最小，使用低阈值(3%)
-- **ETH/SOL/BNB**：使用中等阈值(4%)
+- **BTC**：波动最小，使用低阈值(4%)
+- **ETH/SOL**：高波动币种，使用较高阈值(5%)
 - **USD1**：稳定币，保持极低阈值(0.5%)
 
 ### 通知消息格式
@@ -645,6 +635,15 @@ python monitor.py --status
 
 ## 更新日志
 
+### v2.4 (2026-02-02)
+- ✅ **波动监控冷却优化** - 波动通知冷却时间从10分钟调整为60秒
+- ✅ **波动配置优化** - 根据币种特性采用保守策略调整阈值
+  - BTC: 3% → 4%
+  - ETH: 4% → 5%
+  - SOL: 4% → 5%
+- ✅ **累积波动阈值提升** - 提高至4%以减少误报
+- ✅ **文档同步更新** - 配置文档与实际代码保持一致
+
 ### v2.3 (2026-01-31)
 - ✅ **多指标波动检测** - 标准差、累积波动、范围分析、波动加速
 - ✅ **视觉优化** - 改进波动和关口警报的视觉区分
@@ -663,7 +662,6 @@ python monitor.py --status
 - ✅ **提取辅助方法** - `_calculate_milestone`, `_check_milestone_cooldown`, `_send_milestone_notification`
 - ✅ **冷却时间优化** - 从5分钟增加到10分钟，减少通知频率
 - ✅ **配置更新** - USD1阈值调整为0.001，更精确监控
-- ✅ **添加BNB支持** - 新增BNB币种监控
 - ✅ **完整测试验证** - Docker环境下全面测试通过
 - ✅ **代码质量提升** - 更清晰的架构，更好的可维护性
 
