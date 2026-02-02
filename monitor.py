@@ -209,8 +209,8 @@ class PriceMonitor:
         # Cooldown tracking: only alert if enough time passed since last alert
         if self.last_milestone_notification_time:
             time_since_last = (current_time - self.last_milestone_notification_time).total_seconds()
-            # Use balanced cooldown for volatility (30 seconds to prevent alert fatigue)
-            volatility_cooldown = min(self.milestone_cooldown_seconds, 30)
+            # Use balanced cooldown for volatility (60 seconds to prevent alert fatigue)
+            volatility_cooldown = min(self.milestone_cooldown_seconds, 60)
             if time_since_last < volatility_cooldown:
                 return volatility_info
 
