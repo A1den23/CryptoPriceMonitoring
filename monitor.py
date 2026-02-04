@@ -171,8 +171,11 @@ class PriceMonitor:
         std_dev_pct = (std_dev / mean_price) * 100 if mean_price > 0 else 0
 
         # Metric 2: Cumulative volatility (sum of absolute price changes)
-        cumulative_change = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices)))
-        cumulative_volatility_pct = (cumulative_change / prices[0]) * 100 if prices[0] > 0 else 0
+        if len(prices) >= 2:
+            cumulative_change = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices)))
+            cumulative_volatility_pct = (cumulative_change / prices[0]) * 100 if prices[0] > 0 else 0
+        else:
+            cumulative_volatility_pct = 0.0
 
         # Metric 3: Min/max range (original method)
         min_price = min(prices)
@@ -321,6 +324,7 @@ class WebSocketMultiCoinMonitor:
         self.last_print_time = None
         self.print_interval = 5  # Print status every 5 seconds
         self._pending_updates: List[str] = []
+        self._update_lock = asyncio.Lock()  # Lock for thread-safe updates
 
         # Shutdown handling
         self._shutdown_event = asyncio.Event()
@@ -354,7 +358,8 @@ class WebSocketMultiCoinMonitor:
         self._shutdown_event.set()
 
         # Restore original signal handler to allow immediate force-quit if needed
-        signal.signal(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
+        from common import _restore_signal_handler
+        _restore_signal_handler(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
 
     async def _send_shutdown_notification(self):
         """Send shutdown notification via Telegram"""
@@ -389,9 +394,10 @@ class WebSocketMultiCoinMonitor:
         # Check price for alerts (returns None if price hasn't changed)
         output = monitor.check(price)
 
-        # Only add to pending updates if price has changed
+        # Only add to pending updates if price has changed (thread-safe)
         if output is not None:
-            self._pending_updates.append(output)
+            async with self._update_lock:
+                self._pending_updates.append(output)
 
         # Print updates periodically
         current_time = datetime.now(UTC8)
@@ -399,29 +405,31 @@ class WebSocketMultiCoinMonitor:
             self.last_print_time is None
             or (current_time - self.last_print_time).total_seconds() >= self.print_interval
         ):
-            self._print_updates()
+            await self._print_updates()
             self.last_print_time = current_time
 
-    def _print_updates(self):
+    async def _print_updates(self):
         """Print accumulated price updates"""
-        if not self._pending_updates:
-            return
+        async with self._update_lock:
+            if not self._pending_updates:
+                return
+
+            updates_to_print = list(self._pending_updates)
+            self._pending_updates.clear()
 
         timestamp = datetime.now(UTC8).strftime('%H:%M:%S')
         logger.info(f"Real-time price updates [{timestamp}]:")
-        for update in self._pending_updates:
+        for update in updates_to_print:
             logger.info(f"  {update}")
 
         try:
             print(f"[{timestamp}] Real-time updates:")
-            for update in self._pending_updates:
+            for update in updates_to_print:
                 print(f"  {update}")
             print()
         except (OSError, IOError):
             # Handle broken pipe when running in background
             pass
-
-        self._pending_updates.clear()
 
     async def run(self):
         """Start WebSocket monitoring"""
@@ -501,41 +509,41 @@ def test_volatility_alert():
     print("\n=== Testing Volatility Monitoring ===\n")
 
     config = ConfigManager()
-    fetcher = BinancePriceFetcher()
     notifier = TelegramNotifier()
-
     enabled_coins = config.get_enabled_coins()
 
-    for coin_config in enabled_coins:
-        try:
-            price = fetcher.get_current_price(coin_config.symbol)
-            if price:
-                # Calculate a fake high volatility scenario
-                fake_high_price = price * 1.05
-                fake_low_price = price * 0.98
-                fake_volatility = ((fake_high_price - fake_low_price) / fake_low_price) * 100
+    # Use context manager to ensure proper cleanup
+    with BinancePriceFetcher() as fetcher:
+        for coin_config in enabled_coins:
+            try:
+                price = fetcher.get_current_price(coin_config.symbol)
+                if price:
+                    # Calculate a fake high volatility scenario
+                    fake_high_price = price * 1.05
+                    fake_low_price = price * 0.98
+                    fake_volatility = ((fake_high_price - fake_low_price) / fake_low_price) * 100
 
-                coin = get_coin_display_name(coin_config.symbol)
+                    coin = get_coin_display_name(coin_config.symbol)
 
-                print(f"Testing {coin}...")
-                print(f"  Current Price: {format_price(price)}")
-                print(f"  Volatility Threshold: {coin_config.volatility_percent}%")
-                print(f"  Simulated Volatility: {fake_volatility:.2f}%")
+                    print(f"Testing {coin}...")
+                    print(f"  Current Price: {format_price(price)}")
+                    print(f"  Volatility Threshold: {coin_config.volatility_percent}%")
+                    print(f"  Simulated Volatility: {fake_volatility:.2f}%")
 
-                # Send test alert
-                message = (
-                    f"🧪 <b>Test Alert - Volatility Monitoring</b>\n"
-                    f"🪙 {coin_config.symbol}\n"
-                    f"💰 Current Price: {format_price(price)}\n"
-                    f"📊 Your Alert Threshold: {coin_config.volatility_percent}% in {coin_config.volatility_window}s\n"
-                    f"✅ Volatility monitoring is ACTIVE\n"
-                    f"📈 Simulated Alert: {fake_volatility:.2f}% would trigger alert!\n"
-                    f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                notifier.send_message(message)
-                print(f"  ✓ Test alert sent!\n")
-        except Exception as e:
-            logger.error(f"Error testing {coin_config.coin_name}: {e}")
+                    # Send test alert
+                    message = (
+                        f"🧪 <b>Test Alert - Volatility Monitoring</b>\n"
+                        f"🪙 {coin_config.symbol}\n"
+                        f"💰 Current Price: {format_price(price)}\n"
+                        f"📊 Your Alert Threshold: {coin_config.volatility_percent}% in {coin_config.volatility_window}s\n"
+                        f"✅ Volatility monitoring is ACTIVE\n"
+                        f"📈 Simulated Alert: {fake_volatility:.2f}% would trigger alert!\n"
+                        f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    notifier.send_message(message)
+                    print(f"  ✓ Test alert sent!\n")
+            except Exception as e:
+                logger.error(f"Error testing {coin_config.coin_name}: {e}")
 
     print("Test complete! Check your Telegram for the test alerts.\n")
 
@@ -547,25 +555,25 @@ def show_status():
     print("="*60 + "\n")
 
     config = ConfigManager()
-    fetcher = BinancePriceFetcher()
-
     enabled_coins = config.get_enabled_coins()
 
-    for coin_config in enabled_coins:
-        try:
-            price = fetcher.get_current_price(coin_config.symbol)
-            if price:
-                threshold_str = f"${int(coin_config.integer_threshold):,}" if coin_config.integer_threshold >= 1 else f"${coin_config.integer_threshold}"
-                emoji = get_coin_emoji(coin_config.coin_name)
+    # Use context manager to ensure proper cleanup
+    with BinancePriceFetcher() as fetcher:
+        for coin_config in enabled_coins:
+            try:
+                price = fetcher.get_current_price(coin_config.symbol)
+                if price:
+                    threshold_str = f"${int(coin_config.integer_threshold):,}" if coin_config.integer_threshold >= 1 else f"${coin_config.integer_threshold}"
+                    emoji = get_coin_emoji(coin_config.coin_name)
 
-                print(f"{emoji} 🪙 {coin_config.coin_name}")
-                print(f"   Symbol: {coin_config.symbol}")
-                print(f"   Current Price: {format_price(price)}")
-                print(f"   Integer Milestone: every {threshold_str}")
-                print(f"   Volatility Alert: {coin_config.volatility_percent}% in {coin_config.volatility_window}s")
-                print()
-        except Exception as e:
-            logger.error(f"Error fetching status for {coin_config.coin_name}: {e}")
+                    print(f"{emoji} 🪙 {coin_config.coin_name}")
+                    print(f"   Symbol: {coin_config.symbol}")
+                    print(f"   Current Price: {format_price(price)}")
+                    print(f"   Integer Milestone: every {threshold_str}")
+                    print(f"   Volatility Alert: {coin_config.volatility_percent}% in {coin_config.volatility_window}s")
+                    print()
+            except Exception as e:
+                logger.error(f"Error fetching status for {coin_config.coin_name}: {e}")
 
     print("="*60 + "\n")
 

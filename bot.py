@@ -51,7 +51,7 @@ class TelegramBot:
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
         # Shutdown handling
-        self._shutdown_requested = False
+        self._shutdown_event = asyncio.Event()
         self._setup_signal_handlers()
 
         # Track start time
@@ -110,10 +110,13 @@ class TelegramBot:
         """Handle shutdown signals (SIGINT, SIGTERM)"""
         sig_name = signal.Signals(signum).name
         logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
-        self._shutdown_requested = True
+        
+        # Set the shutdown event (thread-safe)
+        self._shutdown_event.set()
 
-        # Restore original signal handler
-        signal.signal(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
+        # Restore original signal handler (cross-platform safe)
+        from common import _restore_signal_handler
+        _restore_signal_handler(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -421,9 +424,8 @@ class TelegramBot:
             )
 
             try:
-                # Keep running until shutdown is requested
-                while not self._shutdown_requested:
-                    await asyncio.sleep(0.5)
+                # Keep running until shutdown is requested (using event for efficiency)
+                await self._shutdown_event.wait()
             finally:
                 # Graceful shutdown
                 logger.info("Stopping Telegram Bot...")
@@ -465,7 +467,7 @@ def main():
         bot.run()
 
         # Send shutdown notification if graceful shutdown was requested
-        if bot._shutdown_requested:
+        if bot._shutdown_event.is_set():
             logger.info("Bot stopped via signal")
             shutdown_message = (
                 "👋 <b>Telegram Interactive Bot Stopped</b>\n\n"

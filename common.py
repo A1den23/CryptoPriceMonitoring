@@ -8,6 +8,7 @@ import os
 import logging
 import asyncio
 import json
+import signal
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Callable, Awaitable, Tuple, Union
 from dataclasses import dataclass
@@ -18,6 +19,15 @@ import aiohttp
 import websockets
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
+
+
+def _restore_signal_handler(signum: int, original_handler):
+    """Restore original signal handler, handling cross-platform differences"""
+    try:
+        signal.signal(signum, original_handler)
+    except (ValueError, OSError):
+        # Signal might not be available on this platform (e.g., Windows)
+        pass
 
 # Load environment variables
 load_dotenv()
@@ -79,6 +89,14 @@ def setup_logging(log_file: str = "logs/monitor.log", level: Optional[Union[int,
     return logging.getLogger(__name__)
 
 
+# Note: logger is initialized lazily to ensure proper configuration
+# Use get_logger() to get the configured logger
+def get_logger():
+    """Get the configured logger"""
+    return logging.getLogger(__name__)
+
+
+# Backwards compatible module-level logger (will be configured after setup_logging is called)
 logger = logging.getLogger(__name__)
 
 
@@ -118,6 +136,8 @@ class ConfigManager:
     def __init__(self):
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # Note: CHECK_INTERVAL_SECONDS is kept for backwards compatibility but not used
+        # (WebSocket mode provides real-time updates without polling)
         self.check_interval = int(os.getenv("CHECK_INTERVAL_SECONDS", "5"))
         self.debug_mode = os.getenv("DEBUG", "false").lower() == "true"
 
@@ -199,6 +219,15 @@ class BinancePriceFetcher:
     def close(self):
         """Close the session"""
         self.session.close()
+
+    def __enter__(self):
+        """Support for 'with' statement"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Close session when exiting 'with' block"""
+        self.close()
+        return False
 
 
 class AsyncBinancePriceFetcher:
@@ -310,7 +339,30 @@ def get_coin_display_name(symbol: str) -> str:
 
 def get_coin_emoji(coin_name: str) -> str:
     """Get emoji for coin name"""
-    return {"BTC": "₿", "ETH": "Ξ", "SOL": "◎", "USD1": "$1"}.get(coin_name, "🪙")
+    # Extended emoji mapping for common cryptocurrencies
+    emoji_map = {
+        "BTC": "₿",       # Bitcoin
+        "ETH": "Ξ",       # Ethereum
+        "SOL": "◎",       # Solana
+        "USD1": "$1",     # USD1 stablecoin
+        "USDT": "₮",      # Tether
+        "USDC": "₮",      # USD Coin
+        "XRP": "✕",       # Ripple
+        "DOGE": "Ð",      # Dogecoin
+        "ADA": "₳",       # Cardano
+        "DOT": "•",       # Polkadot
+        "AVAX": "▲",      # Avalanche
+        "MATIC": "⬡",     # Polygon
+        "LINK": "⬡",      # Chainlink
+        "LTC": "Ł",       # Litecoin
+        "BCH": "₿",       # Bitcoin Cash
+        "BNB": "🅱️",       # Binance Coin
+        "UNI": "🦄",      # Uniswap
+        "AAVE": "👻",     # Aave
+        "ATOM": "⚛️",      # Cosmos
+        "XTZ": "ꜩ",       # Tezos
+    }
+    return emoji_map.get(coin_name, "🪙")
 
 
 class ConnectionState(Enum):
