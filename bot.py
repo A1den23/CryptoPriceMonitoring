@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from common import (
     setup_logging,
     ConfigManager,
-    BinancePriceFetcher,
+    AsyncBinancePriceFetcher,
     TelegramNotifier,
     format_price,
     get_coin_emoji,
@@ -36,7 +36,7 @@ class TelegramBot:
         if not self.config.telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 
-        self.fetcher = BinancePriceFetcher()
+        self.fetcher: Optional[AsyncBinancePriceFetcher] = None
         self.notifier = TelegramNotifier()
 
         # Create application
@@ -58,6 +58,28 @@ class TelegramBot:
         self.start_time: Optional[datetime] = None
 
         logger.info("Telegram Bot initialized successfully")
+
+    async def _get_price(self, symbol: str) -> Optional[float]:
+        """Fetch price using async HTTP client"""
+        if not self.fetcher:
+            logger.error("Async fetcher not initialized")
+            return None
+        try:
+            return await self.fetcher.get_current_price(symbol)
+        except Exception as e:
+            logger.error(f"Error fetching price for {symbol}: {e}")
+            return None
+
+    async def _get_prices(self, symbols) -> dict:
+        """Fetch multiple prices concurrently using async HTTP client"""
+        if not self.fetcher:
+            logger.error("Async fetcher not initialized")
+            return {symbol: None for symbol in symbols}
+        try:
+            return await self.fetcher.get_multiple_prices(symbols)
+        except Exception as e:
+            logger.error(f"Error fetching multiple prices: {e}")
+            return {symbol: None for symbol in symbols}
 
     def _format_uptime(self) -> str:
         """Format uptime duration"""
@@ -194,27 +216,28 @@ class TelegramBot:
             await update.message.reply_text(status_message, parse_mode="HTML", disable_notification=False)
             return
 
+        prices = await self._get_prices([c.symbol for c in enabled_coins])
+
         for coin_config in enabled_coins:
-            try:
-                price = self.fetcher.get_current_price(coin_config.symbol)
-
-                # Format threshold
-                if coin_config.integer_threshold >= 1:
-                    threshold_str = f"${int(coin_config.integer_threshold):,}"
-                else:
-                    threshold_str = f"${coin_config.integer_threshold}"
-
-                emoji = get_coin_emoji(coin_config.coin_name)
-
-                status_message += (
-                    f"{emoji} <b>{coin_config.coin_name}</b> ({coin_config.symbol})\n"
-                    f"   💰 Price: {format_price(price) if price else '❌ N/A'}\n"
-                    f"   📍 Milestone: every {threshold_str}\n"
-                    f"   📊 Volatility Alert: {coin_config.volatility_percent}%/{coin_config.volatility_window}s\n\n"
-                )
-            except Exception as e:
-                logger.error(f"Error fetching status for {coin_config.coin_name}: {e}")
+            price = prices.get(coin_config.symbol)
+            if price is None:
                 status_message += f"❌ <b>{coin_config.coin_name}</b>: Error fetching data\n\n"
+                continue
+
+            # Format threshold
+            if coin_config.integer_threshold >= 1:
+                threshold_str = f"${int(coin_config.integer_threshold):,}"
+            else:
+                threshold_str = f"${coin_config.integer_threshold}"
+
+            emoji = get_coin_emoji(coin_config.coin_name)
+
+            status_message += (
+                f"{emoji} <b>{coin_config.coin_name}</b> ({coin_config.symbol})\n"
+                f"   💰 Price: {format_price(price)}\n"
+                f"   📍 Milestone: every {threshold_str}\n"
+                f"   📊 Volatility Alert: {coin_config.volatility_percent}%/{coin_config.volatility_window}s\n\n"
+            )
 
         # Add uptime and timestamp
         uptime = self._format_uptime()
@@ -234,17 +257,15 @@ class TelegramBot:
             await update.message.reply_text(message, parse_mode="HTML", disable_notification=False)
             return
 
+        prices = await self._get_prices([c.symbol for c in enabled_coins])
+
         for coin_config in enabled_coins:
-            try:
-                price = self.fetcher.get_current_price(coin_config.symbol)
-                if price:
-                    emoji = get_coin_emoji(coin_config.coin_name)
-                    message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
-                else:
-                    message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
-            except Exception as e:
-                logger.error(f"Error fetching price for {coin_config.coin_name}: {e}")
-                message += f"❌ <b>{coin_config.coin_name}</b>: Error\n"
+            price = prices.get(coin_config.symbol)
+            if price is not None:
+                emoji = get_coin_emoji(coin_config.coin_name)
+                message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
+            else:
+                message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
 
         message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
 
@@ -262,17 +283,14 @@ class TelegramBot:
             message = "💰 <b>Current Prices</b>\n\n"
 
             enabled_coins = self.config.get_enabled_coins()
+            prices = await self._get_prices([c.symbol for c in enabled_coins])
             for coin_config in enabled_coins:
-                try:
-                    price = self.fetcher.get_current_price(coin_config.symbol)
-                    if price:
-                        emoji = get_coin_emoji(coin_config.coin_name)
-                        message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
-                    else:
-                        message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
-                except Exception as e:
-                    logger.error(f"Error fetching price for {coin_config.coin_name}: {e}")
-                    message += f"❌ <b>{coin_config.coin_name}</b>: Error\n"
+                price = prices.get(coin_config.symbol)
+                if price is not None:
+                    emoji = get_coin_emoji(coin_config.coin_name)
+                    message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
+                else:
+                    message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
 
             message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
 
@@ -315,9 +333,9 @@ class TelegramBot:
             return
 
         try:
-            price = self.fetcher.get_current_price(coin_config.symbol)
+            price = await self._get_price(coin_config.symbol)
 
-            if price:
+            if price is not None:
                 emoji = get_coin_emoji(coin_name)
 
                 response = (
@@ -393,22 +411,25 @@ class TelegramBot:
         # Record start time
         self.start_time = datetime.now(UTC8)
 
-        await self.application.initialize()
-        await self.application.start()
-        await self.application.updater.start_polling(
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        async with AsyncBinancePriceFetcher() as fetcher:
+            self.fetcher = fetcher
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
 
-        # Keep running until shutdown is requested
-        while not self._shutdown_requested:
-            await asyncio.sleep(0.5)
-
-        # Graceful shutdown
-        logger.info("Stopping Telegram Bot...")
-        await self.application.updater.stop()
-        await self.application.stop()
-        await self.application.shutdown()
+            try:
+                # Keep running until shutdown is requested
+                while not self._shutdown_requested:
+                    await asyncio.sleep(0.5)
+            finally:
+                # Graceful shutdown
+                logger.info("Stopping Telegram Bot...")
+                await self.application.updater.stop()
+                await self.application.stop()
+                await self.application.shutdown()
 
     def run(self):
         """Start the bot (synchronous wrapper)"""

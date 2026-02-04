@@ -13,7 +13,7 @@ services:
       - .env
     volumes:
       # 持久化日志
-      - ./logs:/app/logs
+      - crypto-logs:/app/logs
     networks:
       - crypto-network
     # 资源限制
@@ -54,7 +54,7 @@ services:
       - .env
     volumes:
       # 持久化日志
-      - ./logs:/app/logs
+      - crypto-logs:/app/logs
     networks:
       - crypto-network
     # 资源限制
@@ -86,3 +86,6 @@ services:
 networks:
   crypto-network:
     driver: bridge
+
+volumes:
+  crypto-logs:

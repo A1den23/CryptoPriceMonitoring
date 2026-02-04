@@ -53,6 +53,10 @@ class PriceMonitor:
         self.last_milestone_notification_time: Optional[datetime] = None
         self.milestone_cooldown_seconds = 600  # 10 minutes global cooldown
 
+        # Volatility notification cooldown tracking (independent from milestone cooldown)
+        self.last_volatility_notification_time: Optional[datetime] = None
+        self.volatility_cooldown_seconds = 60  # 60 seconds cooldown
+
         # Volatility tracking - only alert when cumulative volatility is increasing
         self.last_cumulative_volatility: float = 0.0
 
@@ -177,8 +181,13 @@ class PriceMonitor:
 
         # Metric 4: Volatility acceleration (rate of change in recent movements)
         if len(prices) >= 4:
-            recent_changes = [abs(prices[i] - prices[i-1]) for i in range(-4, 0)]
-            acceleration = max(recent_changes) / (sum(recent_changes) / len(recent_changes)) if sum(recent_changes) > 0 else 1
+            recent_prices = prices[-4:]
+            recent_changes = [
+                abs(recent_prices[i] - recent_prices[i - 1])
+                for i in range(1, len(recent_prices))
+            ]
+            avg_change = (sum(recent_changes) / len(recent_changes)) if recent_changes else 0
+            acceleration = (max(recent_changes) / avg_change) if avg_change > 0 else 1
         else:
             acceleration = 1
 
@@ -207,11 +216,9 @@ class PriceMonitor:
         volatility_info = f"σ:{std_dev_pct:.2f}% Σ:{cumulative_volatility_pct:.2f}% R:{range_volatility_pct:.2f}%"
 
         # Cooldown tracking: only alert if enough time passed since last alert
-        if self.last_milestone_notification_time:
-            time_since_last = (current_time - self.last_milestone_notification_time).total_seconds()
-            # Use balanced cooldown for volatility (60 seconds to prevent alert fatigue)
-            volatility_cooldown = min(self.milestone_cooldown_seconds, 60)
-            if time_since_last < volatility_cooldown:
+        if self.last_volatility_notification_time:
+            time_since_last = (current_time - self.last_volatility_notification_time).total_seconds()
+            if time_since_last < self.volatility_cooldown_seconds:
                 return volatility_info
 
         if is_volatile:
@@ -246,7 +253,7 @@ class PriceMonitor:
             logger.info(f"[{coin}] High volatility - {', '.join(reasons)}")
 
             # Update last notification time (but don't clear history - use sliding window)
-            self.last_milestone_notification_time = current_time
+            self.last_volatility_notification_time = current_time
             return volatility_info
 
         return volatility_info

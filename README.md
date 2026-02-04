@@ -88,6 +88,7 @@ TELEGRAM_CHAT_ID=你的chat_id
 # Global Settings
 CHECK_INTERVAL_SECONDS=5
 DEBUG=false
+LOG_LEVEL=INFO
 
 # Coin List (comma-separated, determines which coins to load)
 COIN_LIST=BTC,ETH,SOL,USD1
@@ -129,6 +130,7 @@ USD1_VOLATILITY_WINDOW_SECONDS=180
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | - |
 | `TELEGRAM_CHAT_ID` | 你的 Telegram Chat ID | - |
 | `DEBUG` | 调试模式 | `false` |
+| `LOG_LEVEL` | 日志级别（DEBUG/INFO/WARNING/ERROR） | `INFO` |
 | `COIN_LIST` | 要监控的币种列表（逗号分隔） | `BTC,ETH,SOL,USD1` |
 
 **币种配置**（每个币种独立的配置）
@@ -138,7 +140,7 @@ USD1_VOLATILITY_WINDOW_SECONDS=180
 | `{币种}_SYMBOL` | 交易对符号 | `{币种}USDT` |
 | `{币种}_INTEGER_THRESHOLD` | 整数关口间隔（支持整数和小数）| `1000` |
 | `{币种}_VOLATILITY_PERCENT` | 触发波动警报的百分比 | `3.0` |
-| `{币种}_VOLATILITY_WINDOW_SECONDS` | 波动计算时间窗口（秒）| `180` |
+| `{币种}_VOLATILITY_WINDOW_SECONDS` | 波动计算时间窗口（秒）| `60` |
 
 #### 配置示例：
 
@@ -531,6 +533,11 @@ docker compose restart crypto-monitor
 docker compose restart crypto-bot
 ```
 
+### 日志与权限
+
+默认使用 Docker volume `crypto-logs` 持久化日志，容器以非 root 用户运行。
+如需将日志写入宿主机 `./logs`，请确保该目录对容器用户可写（默认 UID 999），并在 `docker-compose.yml` 中把 `crypto-logs:/app/logs` 改为 `./logs:/app/logs`。
+
 ### 服务说明
 
 | 服务 | 容器名 | 功能 |
@@ -571,7 +578,7 @@ docker compose restart crypto-bot
 
 ### WebSocket 连接失败
 1. 检查网络连接
-2. 查看日志文件 `logs/monitor.log`
+2. 本地运行：查看日志文件 `logs/monitor.log`；Docker 运行：`docker compose logs -f crypto-monitor`
 3. 检查防火墙设置（WebSocket 使用 9443 端口）
 4. 重启监控程序
 
@@ -625,9 +632,9 @@ python monitor.py --status
 ├── docker-compose.yml     # Docker Compose 配置
 ├── .dockerignore          # Docker 构建排除文件
 ├── DEPLOYMENT.md          # Docker 部署详细指南
-├── logs/                  # 日志目录（自动创建）
-│   ├── monitor.log        # 监控日志
-│   └── bot.log            # Bot 日志
+├── logs/                  # 本地运行日志目录（Docker 默认使用 volume: crypto-logs）
+│   ├── monitor.log        # 监控日志（本地运行）
+│   └── bot.log            # Bot 日志（本地运行）
 └── README.md              # 说明文档
 ```
 

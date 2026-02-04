@@ -9,7 +9,7 @@ import logging
 import asyncio
 import json
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Callable, Awaitable, Tuple
+from typing import Optional, Dict, List, Callable, Awaitable, Tuple, Union
 from dataclasses import dataclass
 from enum import Enum
 
@@ -26,7 +26,29 @@ load_dotenv()
 UTC8 = timezone(timedelta(hours=8))
 
 # Configure structured logging
-def setup_logging(log_file: str = "logs/monitor.log", level: int = logging.INFO):
+def _resolve_log_level(level: Optional[Union[int, str]]) -> int:
+    """Resolve log level from explicit value or LOG_LEVEL/DEBUG env"""
+    if level is not None:
+        if isinstance(level, str):
+            name = level.strip().upper()
+            if name in logging._nameToLevel:
+                return logging._nameToLevel[name]
+            return logging.INFO
+        return level
+
+    env_level = os.getenv("LOG_LEVEL")
+    if env_level:
+        name = env_level.strip().upper()
+        if name in logging._nameToLevel:
+            return logging._nameToLevel[name]
+
+    if os.getenv("DEBUG", "false").lower() == "true":
+        return logging.DEBUG
+
+    return logging.INFO
+
+
+def setup_logging(log_file: str = "logs/monitor.log", level: Optional[Union[int, str]] = None):
     """Setup structured logging with file and console handlers"""
     handlers = [logging.StreamHandler()]
 
@@ -42,11 +64,18 @@ def setup_logging(log_file: str = "logs/monitor.log", level: int = logging.INFO)
         print("Logging to console only.")
 
     # Configure logging
+    resolved_level = _resolve_log_level(level)
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-        level=level,
+        level=resolved_level,
         handlers=handlers
     )
+
+    # Reduce sensitive/noisy logs (prevents Telegram bot token from appearing)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
     return logging.getLogger(__name__)
 
 
@@ -217,15 +246,16 @@ class AsyncBinancePriceFetcher:
 
     async def get_multiple_prices(self, symbols: List[str]) -> Dict[str, Optional[float]]:
         """Fetch multiple prices concurrently"""
-        tasks = {symbol: self.get_current_price(symbol) for symbol in symbols}
-        results = {}
+        tasks = {symbol: asyncio.create_task(self.get_current_price(symbol)) for symbol in symbols}
+        results: Dict[str, Optional[float]] = {}
 
-        for symbol, task in tasks.items():
-            try:
-                results[symbol] = await task
-            except BinanceAPIError as e:
-                logger.error(f"Failed to fetch {symbol} after retries: {e}")
+        completed = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        for symbol, result in zip(tasks.keys(), completed):
+            if isinstance(result, Exception):
+                logger.error(f"Failed to fetch {symbol} after retries: {result}")
                 results[symbol] = None
+            else:
+                results[symbol] = result
 
         return results
 
@@ -412,7 +442,7 @@ class BinanceWebSocketClient:
                                 # Ignore broken pipe errors when running in background
                                 pass
                             except Exception as e:
-                                logger.error(f"Error in price callback: {e}")
+                                logger.exception("Error in price callback")
 
                         # Subscription confirmation
                         elif "result" in data:
