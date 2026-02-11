@@ -109,6 +109,7 @@ class CoinConfig:
     integer_threshold: float
     volatility_percent: float
     volatility_window: int
+    volume_alert_multiplier: float = 10.0  # Volume anomaly threshold (10x = 1000% increase)
 
     @classmethod
     def from_env(cls, coin_name: str) -> 'CoinConfig':
@@ -119,7 +120,8 @@ class CoinConfig:
             symbol=os.getenv(f"{coin_name}_SYMBOL", f"{coin_name}USDT"),
             integer_threshold=float(os.getenv(f"{coin_name}_INTEGER_THRESHOLD", "1000")),
             volatility_percent=float(os.getenv(f"{coin_name}_VOLATILITY_PERCENT", "3.0")),
-            volatility_window=int(os.getenv(f"{coin_name}_VOLATILITY_WINDOW_SECONDS", "60"))
+            volatility_window=int(os.getenv(f"{coin_name}_VOLATILITY_WINDOW_SECONDS", "60")),
+            volume_alert_multiplier=float(os.getenv(f"{coin_name}_VOLUME_ALERT_MULTIPLIER", "10.0"))
         )
 
     def __str__(self):
@@ -127,7 +129,8 @@ class CoinConfig:
         return (
             f"{self.coin_name}: enabled={self.enabled}, symbol={self.symbol}, "
             f"integer_threshold={threshold_str}, "
-            f"volatility={self.volatility_percent}%/{self.volatility_window}s"
+            f"volatility={self.volatility_percent}%/{self.volatility_window}s, "
+            f"volume_alert={self.volume_alert_multiplier}x"
         )
 
 
@@ -140,6 +143,12 @@ class ConfigManager:
         # (WebSocket mode provides real-time updates without polling)
         self.check_interval = int(os.getenv("CHECK_INTERVAL_SECONDS", "5"))
         self.debug_mode = os.getenv("DEBUG", "false").lower() == "true"
+        # Volume alert cooldown (global default, can be overridden per coin in the future)
+        self.volume_alert_cooldown_seconds = int(os.getenv("VOLUME_ALERT_COOLDOWN_SECONDS", "5"))
+        # Volatility alert cooldown (time between volatility notifications)
+        self.volatility_alert_cooldown_seconds = int(os.getenv("VOLATILITY_ALERT_COOLDOWN_SECONDS", "60"))
+        # Milestone alert cooldown (global cooldown for any milestone crossing)
+        self.milestone_alert_cooldown_seconds = int(os.getenv("MILESTONE_ALERT_COOLDOWN_SECONDS", "600"))
 
         # Get coin list from env or use default
         coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")
@@ -397,6 +406,7 @@ class BinanceWebSocketClient:
         self,
         symbols: List[str],
         on_price_callback: Callable[[str, float], Awaitable[None]],
+        on_kline_callback: Optional[Callable[[str, float, float, bool], Awaitable[None]]] = None,
         reconnect_delay: float = 5.0,
         ping_interval: float = 30.0,
         max_reconnect_attempts: int = None,
@@ -407,12 +417,17 @@ class BinanceWebSocketClient:
         Args:
             symbols: List of trading symbols (e.g., ["BTCUSDT", "ETHUSDT"])
             on_price_callback: Async callback function called on each price update
+            on_kline_callback: Optional async callback for kline updates (symbol, price, volume, is_closed)
             reconnect_delay: Delay between reconnection attempts (seconds)
             ping_interval: Interval for sending ping frames (seconds)
             max_reconnect_attempts: Maximum reconnection attempts (None = infinite)
         """
+        if not symbols:
+            raise ValueError("At least one symbol is required for BinanceWebSocketClient")
+
         self.symbols = symbols
         self.on_price_callback = on_price_callback
+        self.on_kline_callback = on_kline_callback
         self.reconnect_delay = reconnect_delay
         self.ping_interval = ping_interval
         self.max_reconnect_attempts = max_reconnect_attempts
@@ -433,10 +448,18 @@ class BinanceWebSocketClient:
         logger.info(f"BinanceWebSocketClient initialized for {len(symbols)} symbols")
 
     def _build_stream_url(self) -> str:
-        """Build WebSocket URL with subscribed streams"""
-        # Format: btcusdt@ticker / ethusdt@ticker
-        streams = "/".join([f"{symbol.lower()}@ticker" for symbol in self.symbols])
-        return f"{self.BASE_COMBINED_WS_URL}?streams={streams}"
+        """Build WebSocket URL with subscribed streams (ticker + kline)"""
+        streams = []
+        for symbol in self.symbols:
+            symbol_lower = symbol.lower()
+            streams.append(f"{symbol_lower}@ticker")      # 价格更新
+            if self.on_kline_callback:
+                streams.append(f"{symbol_lower}@kline_1m")  # 1分钟K线(含成交量)
+
+        if not streams:
+            raise ValueError("No streams configured for WebSocket connection")
+
+        return f"{self.BASE_COMBINED_WS_URL}?streams={'/'.join(streams)}"
 
     def _parse_ticker_message(self, data: dict) -> Tuple[str, float]:
         """
@@ -465,6 +488,65 @@ class BinanceWebSocketClient:
             logger.error(f"Failed to parse ticker message: {e}, data: {data}")
             raise
 
+    def _parse_kline_message(self, data: dict) -> Optional[Tuple[str, float, float, bool]]:
+        """
+        Parse Binance kline message
+
+        Returns:
+            Tuple of (symbol, price, volume, is_closed) or None
+            - symbol: Trading pair (e.g., "ETHUSDT")
+            - price: Kline close price
+            - volume: Kline volume
+            - is_closed: Whether the kline is closed (complete)
+
+        Format:
+        {
+            "e": "kline",
+            "s": "ETHUSDT",
+            "k": {
+                "t": 1739980800000,    # Kline start time
+                "T": 1739980859999,    # Kline end time
+                "s": "ETHUSDT",        # Symbol
+                "i": "1m",             # Interval
+                "o": "2700.00",        # Open price
+                "c": "2700.50",        # Close price
+                "h": "2705.00",        # High price
+                "l": "2698.00",        # Low price
+                "v": "1234.56",        # Volume
+                "n": 100,              # Number of trades
+                "x": true,             # Is kline closed
+                "q": "3333333",        # Quote volume
+                ...
+            }
+        }
+        """
+        try:
+            # Combined stream format
+            if "stream" in data and "data" in data:
+                inner_data = data["data"]
+                if inner_data.get("e") == "kline":
+                    kline = inner_data.get("k", {})
+                    return (
+                        kline.get("s"),           # Symbol
+                        float(kline.get("c")),    # Close price
+                        float(kline.get("v")),    # Volume
+                        kline.get("x", False)     # Is closed
+                    )
+            # Single stream format
+            elif data.get("e") == "kline":
+                kline = data.get("k", {})
+                return (
+                    kline.get("s"),
+                    float(kline.get("c")),
+                    float(kline.get("v")),
+                    kline.get("x", False)
+                )
+
+            return None
+        except (KeyError, ValueError, TypeError) as e:
+            logger.error(f"Failed to parse kline message: {e}, data: {data}")
+            return None
+
     async def _message_handler(self):
         """Handle incoming WebSocket messages"""
         logger.info("Message handler started")
@@ -480,7 +562,7 @@ class BinanceWebSocketClient:
                     # Handle different message types
                     if isinstance(data, dict):
                         # Ticker update
-                        if data.get("e") == "24hrTicker" or "stream" in data:
+                        if data.get("e") == "24hrTicker" or ("stream" in data and "data" in data and data["data"].get("e") == "24hrTicker"):
                             symbol, price = self._parse_ticker_message(data)
 
                             # Update statistics
@@ -495,6 +577,27 @@ class BinanceWebSocketClient:
                                 pass
                             except Exception as e:
                                 logger.exception("Error in price callback")
+
+                        # Kline update
+                        elif data.get("e") == "kline" or ("stream" in data and "data" in data and data["data"].get("e") == "kline"):
+                            if self.on_kline_callback:
+                                kline_data = self._parse_kline_message(data)
+                                if kline_data:
+                                    symbol, price, volume, is_closed = kline_data
+
+                                    # Only process when kline is closed
+                                    if is_closed:
+                                        # Update statistics
+                                        self.messages_received += 1
+                                        self.last_message_time = datetime.now(UTC8)
+
+                                        # Call user callback
+                                        try:
+                                            await self.on_kline_callback(symbol, price, volume, is_closed)
+                                        except BrokenPipeError:
+                                            pass
+                                        except Exception as e:
+                                            logger.exception("Error in kline callback")
 
                         # Subscription confirmation
                         elif "result" in data:

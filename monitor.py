@@ -12,6 +12,7 @@ Usage:
 import sys
 import asyncio
 import signal
+import math
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List, Dict
@@ -40,7 +41,10 @@ class PriceData:
 
 class PriceMonitor:
     """Monitor price changes for a single coin"""
-    def __init__(self, config: CoinConfig, notifier: TelegramNotifier):
+    def __init__(self, config: CoinConfig, notifier: TelegramNotifier,
+                 volume_alert_cooldown_seconds: int = 5,
+                 volatility_alert_cooldown_seconds: int = 60,
+                 milestone_alert_cooldown_seconds: int = 600):
         self.config = config
         self.notifier = notifier
 
@@ -51,25 +55,40 @@ class PriceMonitor:
 
         # Milestone notification cooldown tracking (global cooldown for any milestone crossing)
         self.last_milestone_notification_time: Optional[datetime] = None
-        self.milestone_cooldown_seconds = 600  # 10 minutes global cooldown
+        self.milestone_cooldown_seconds = milestone_alert_cooldown_seconds  # Configurable
 
         # Volatility notification cooldown tracking (independent from milestone cooldown)
         self.last_volatility_notification_time: Optional[datetime] = None
-        self.volatility_cooldown_seconds = 60  # 60 seconds cooldown
+        self.volatility_cooldown_seconds = volatility_alert_cooldown_seconds  # Configurable
 
         # Volatility tracking - only alert when cumulative volatility is increasing
         self.last_cumulative_volatility: float = 0.0
 
+        # Volume anomaly monitoring
+        self.volume_history: deque = deque()
+        self.last_volume_alert_time: Optional[datetime] = None
+        self.volume_alert_cooldown_seconds = volume_alert_cooldown_seconds  # Configurable cooldown
+        self.latest_volume_info: Optional[str] = None  # Store latest volume info for display
+        self._notification_tasks: set[asyncio.Task] = set()
+
+    # Constants for volume monitoring
+    MIN_VOLUME_DATA_POINTS = 3  # Minimum data points needed for volume comparison
+    MIN_VOLUME_VALUE = 0.0001  # Minimum valid volume value to prevent zero/negative issues
+
     def _calculate_milestone(self, price: float, threshold: float) -> float:
         """Calculate the milestone for a given price and threshold"""
+        if threshold <= 0:
+            raise ValueError(f"Invalid threshold for {self.config.symbol}: {threshold}")
+
         if threshold >= 1:
-            # For larger thresholds (>= 1), use integer-based checking (BTC, ETH, SOL)
+            # For larger thresholds, use integer-based checking (BTC, ETH, SOL)
             price_int = int(price)
             return int(price_int / threshold) * threshold
-        else:
-            # For small thresholds (< 1), use precise checking for stablecoins (USD1)
-            offset = price - 1.0
-            return 1.0 + round(offset / threshold) * threshold
+
+        # For small thresholds, use floor to avoid premature upward milestone alerts.
+        # A small epsilon mitigates floating-point boundary jitter.
+        epsilon = 1e-12
+        return math.floor((price + epsilon) / threshold) * threshold
 
     def _check_milestone_cooldown(self, coin: str) -> bool:
         """Check if milestone notification is in cooldown period.
@@ -82,6 +101,31 @@ class PriceMonitor:
                 logger.debug(f"[{coin}] Global cooldown active ({time_since_last:.0f}s ago)")
                 return True
         return False
+
+    def _on_notification_done(self, task: asyncio.Task) -> None:
+        """Cleanup completed async notification task and log errors."""
+        self._notification_tasks.discard(task)
+        try:
+            task.result()
+        except Exception:
+            logger.exception(f"[{self.config.symbol}] Failed to send Telegram notification")
+
+    def _send_notification(self, message: str) -> None:
+        """
+        Send notification without blocking the event loop.
+
+        - In async context: offload blocking requests call to a worker thread.
+        - In sync context (tests/CLI): send directly.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.notifier.send_message(message)
+            return
+
+        task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._on_notification_done)
 
     def _send_milestone_notification(self, current_price: float, current_milestone: float):
         """Send milestone notification and update tracking"""
@@ -102,7 +146,7 @@ class PriceMonitor:
             f"{direction} 突破方向: {direction_text}\n"
             f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        self.notifier.send_message(message)
+        self._send_notification(message)
 
         # Format milestone for logging
         if self.config.integer_threshold >= 1:
@@ -122,8 +166,13 @@ class PriceMonitor:
             return False
 
         # Calculate current and last milestones
-        current_milestone = self._calculate_milestone(current_price, threshold)
-        last_milestone = self._calculate_milestone(self.last_price, threshold)
+        try:
+            current_milestone = self._calculate_milestone(current_price, threshold)
+            last_milestone = self._calculate_milestone(self.last_price, threshold)
+        except ValueError as e:
+            logger.error(str(e))
+            self.last_price = current_price
+            return False
 
         # Check if milestone was crossed
         if last_milestone != current_milestone:
@@ -252,7 +301,7 @@ class PriceMonitor:
                 f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"━━━━━━━━━━━━━━━━━"
             )
-            self.notifier.send_message(message)
+            self._send_notification(message)
             logger.info(f"[{coin}] High volatility - {', '.join(reasons)}")
 
             # Update last notification time (but don't clear history - use sliding window)
@@ -260,6 +309,101 @@ class PriceMonitor:
             return volatility_info
 
         return volatility_info
+
+    def check_volume_anomaly(self, current_price: float, volume: float) -> Optional[str]:
+        """
+        Check for volume anomalies (sudden spikes in trading volume)
+
+        Detects when volume increases significantly compared to recent baseline,
+        which may indicate market maker issues, heavy trading, or manipulation.
+
+        Args:
+            current_price: Current price from kline close
+            volume: Trading volume from current 1-minute kline
+
+        Returns:
+            Formatted volume info string, or None if no anomaly or insufficient data
+        """
+        # Validate input data
+        if volume <= 0 or current_price <= 0:
+            logger.warning(f"[{self.config.symbol}] Invalid volume data: price={current_price}, volume={volume}")
+            return None
+
+        current_time = datetime.now(UTC8)
+
+        # Add compact rolling data for current window calculations
+        self.volume_history.append({
+            "price": current_price,
+            "volume": volume,
+            "timestamp": current_time
+        })
+
+        # Remove old data outside the time window
+        cutoff_time = current_time - timedelta(seconds=self.config.volatility_window)
+        while self.volume_history and self.volume_history[0]["timestamp"] < cutoff_time:
+            self.volume_history.popleft()
+
+        # Need minimum data points for meaningful comparison
+        if len(self.volume_history) < self.MIN_VOLUME_DATA_POINTS:
+            return None
+
+        # Extract volumes
+        volumes = [v["volume"] for v in self.volume_history]
+
+        # Calculate baseline (average of previous data points, excluding most recent)
+        # This avoids including the potential anomaly in the baseline
+        baseline_volumes = volumes[:-1]
+        avg_volume = sum(baseline_volumes) / len(baseline_volumes)
+        current_volume = volumes[-1]
+
+        # Avoid division by zero (shouldn't happen after validation above)
+        if avg_volume <= 0:
+            return None
+
+        # Calculate volume multiplier
+        volume_multiplier = current_volume / avg_volume
+
+        # Volume anomaly threshold: 10x by default (can be configured per coin)
+        volume_alert_multiplier = getattr(self.config, 'volume_alert_multiplier', 10.0)
+
+        # Check cooldown - prevent alert spam while still showing volume info
+        if self.last_volume_alert_time:
+            time_since_last = (current_time - self.last_volume_alert_time).total_seconds()
+            if time_since_last < self.volume_alert_cooldown_seconds:
+                # In cooldown, just return info without alerting
+                return f"V:{volume_multiplier:.1f}x"
+
+        # Trigger alert if volume exceeds threshold
+        if volume_multiplier >= volume_alert_multiplier:
+            coin = get_coin_display_name(self.config.symbol)
+
+            # Determine price direction (use first price in current window)
+            first_price = self.volume_history[0]["price"]
+            price_change = current_price - first_price
+            price_change_pct = (price_change / first_price) * 100 if first_price > 0 else 0
+            direction = "📈" if price_change > 0 else "📉"
+
+            message = (
+                f"🚨🚨【成交量异常警报】🚨🚨\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"🪙 {self.config.symbol}\n"
+                f"💰 当前价格: {format_price(current_price)}\n"
+                f"{direction} 价格变化: {price_change_pct:+.2f}%\n"
+                f"📊 成交量暴增: {volume_multiplier:.1f}x\n"
+                f"📈 当前成交量: {current_volume:,.0f}\n"
+                f"📊 基准成交量: {avg_volume:,.0f}\n"
+                f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"━━━━━━━━━━━━━━━━━"
+            )
+            self._send_notification(message)
+            logger.info(f"[{coin}] Volume anomaly detected: {volume_multiplier:.1f}x (curr:{current_volume:,.0f}, avg:{avg_volume:,.0f})")
+
+            # Update last notification time
+            self.last_volume_alert_time = current_time
+
+            return f"V:{volume_multiplier:.1f}x🚨"
+
+        return f"V:{volume_multiplier:.1f}x"
 
     def check(self, current_price: float) -> Optional[str]:
         """
@@ -297,6 +441,8 @@ class PriceMonitor:
             output += " 🎯"
         if volatility_info:
             output += f" 📊{volatility_info}"
+        if self.latest_volume_info:
+            output += f" {self.latest_volume_info}"
 
         return output
 
@@ -334,7 +480,13 @@ class WebSocketMultiCoinMonitor:
         """Load monitors from configuration"""
         enabled_coins = self.config.get_enabled_coins()
         for coin_config in enabled_coins:
-            monitor = PriceMonitor(coin_config, self.notifier)
+            monitor = PriceMonitor(
+                coin_config,
+                self.notifier,
+                volume_alert_cooldown_seconds=self.config.volume_alert_cooldown_seconds,
+                volatility_alert_cooldown_seconds=self.config.volatility_alert_cooldown_seconds,
+                milestone_alert_cooldown_seconds=self.config.milestone_alert_cooldown_seconds
+            )
             self.monitors[coin_config.symbol] = monitor
             logger.info(f"✓ Loaded {coin_config}")
 
@@ -408,6 +560,21 @@ class WebSocketMultiCoinMonitor:
             await self._print_updates()
             self.last_print_time = current_time
 
+    async def _on_kline_update(self, symbol: str, price: float, volume: float, is_closed: bool):
+        """Callback function for WebSocket kline updates (volume monitoring)"""
+        monitor = self.monitors.get(symbol)
+        if not monitor:
+            logger.warning(f"No monitor found for symbol: {symbol}")
+            return
+
+        # Only check volume when kline is closed
+        if is_closed:
+            volume_info = monitor.check_volume_anomaly(price, volume)
+
+            # Store volume info for display
+            if volume_info:
+                monitor.latest_volume_info = volume_info
+
     async def _print_updates(self):
         """Print accumulated price updates"""
         async with self._update_lock:
@@ -440,6 +607,10 @@ class WebSocketMultiCoinMonitor:
         print(f"Connection: Real-time WebSocket (10-50ms latency)")
         print(f"{'='*60}\n")
 
+        if not self.monitors:
+            logger.error("No enabled coins configured. Set *_ENABLED=true for at least one coin.")
+            return
+
         # Test Telegram connection
         if not self.notifier.test_connection():
             logger.warning("Failed to send test message. Check your Telegram configuration.")
@@ -451,6 +622,7 @@ class WebSocketMultiCoinMonitor:
         self.ws_client = BinanceWebSocketClient(
             symbols=symbols,
             on_price_callback=self._on_price_update,
+            on_kline_callback=self._on_kline_update,
             reconnect_delay=5.0,
             ping_interval=30.0,
             max_reconnect_attempts=None,  # Infinite reconnect

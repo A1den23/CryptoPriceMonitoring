@@ -25,9 +25,15 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-    # 健康检查 - 检查 Python 进程是否运行
+    # 健康检查 - 在精简镜像中通过 /proc/1/cmdline 校验主进程
     healthcheck:
-      test: ["CMD-SHELL", "ps aux | grep -v grep | grep python.*monitor.py || exit 1"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import pathlib,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); sys.exit(0 if b'monitor.py' in c else 1)"
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -66,9 +72,15 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-    # 健康检查 - 检查 Python 进程是否运行
+    # 健康检查 - 在精简镜像中通过 /proc/1/cmdline 校验主进程
     healthcheck:
-      test: ["CMD-SHELL", "ps aux | grep -v grep | grep python.*bot.py || exit 1"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import pathlib,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); sys.exit(0 if b'bot.py' in c else 1)"
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
