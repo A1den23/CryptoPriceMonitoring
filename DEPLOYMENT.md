@@ -8,13 +8,32 @@
 - 已安装 Docker 和 Docker Compose 插件
 - 已准备好 Telegram Bot Token 与 Chat ID
 
-快速安装 Docker（官方脚本）：
+安装 Docker（官方脚本）：
 
 ```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-newgrp docker
+# 更新系统
+sudo apt update && sudo apt upgrade -y
 
+# 安装必要的包
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+
+# 添加 Docker 官方 GPG 密钥
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# 添加 Docker 仓库
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 安装 Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 启动 Docker
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# 验证安装
 docker --version
 docker compose version
 ```
