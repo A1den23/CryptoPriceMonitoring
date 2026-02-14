@@ -407,6 +407,8 @@ class BinanceWebSocketClient:
         symbols: List[str],
         on_price_callback: Callable[[str, float], Awaitable[None]],
         on_kline_callback: Optional[Callable[[str, float, float, bool], Awaitable[None]]] = None,
+        on_disconnect_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_reconnect_callback: Optional[Callable[[int], Awaitable[None]]] = None,
         reconnect_delay: float = 5.0,
         ping_interval: float = 30.0,
         max_reconnect_attempts: int = None,
@@ -418,6 +420,8 @@ class BinanceWebSocketClient:
             symbols: List of trading symbols (e.g., ["BTCUSDT", "ETHUSDT"])
             on_price_callback: Async callback function called on each price update
             on_kline_callback: Optional async callback for kline updates (symbol, price, volume, is_closed)
+            on_disconnect_callback: Optional async callback when connection is lost (reason)
+            on_reconnect_callback: Optional async callback when reconnection successful (attempt_count)
             reconnect_delay: Delay between reconnection attempts (seconds)
             ping_interval: Interval for sending ping frames (seconds)
             max_reconnect_attempts: Maximum reconnection attempts (None = infinite)
@@ -428,6 +432,8 @@ class BinanceWebSocketClient:
         self.symbols = symbols
         self.on_price_callback = on_price_callback
         self.on_kline_callback = on_kline_callback
+        self.on_disconnect_callback = on_disconnect_callback
+        self.on_reconnect_callback = on_reconnect_callback
         self.reconnect_delay = reconnect_delay
         self.ping_interval = ping_interval
         self.max_reconnect_attempts = max_reconnect_attempts
@@ -439,6 +445,10 @@ class BinanceWebSocketClient:
         self._stop_event = asyncio.Event()
         self._message_task: Optional[asyncio.Task] = None
         self._ping_task: Optional[asyncio.Task] = None
+
+        # Alert tracking (prevent duplicate disconnect alerts)
+        self._disconnect_alert_sent = False
+        self._disconnect_alert_lock = asyncio.Lock()
 
         # Statistics
         self.messages_received = 0
@@ -614,10 +624,32 @@ class BinanceWebSocketClient:
             logger.warning(f"WebSocket connection closed: {e}")
             if not self._stop_event.is_set():
                 self.state = ConnectionState.RECONNECTING
+                await self._trigger_disconnect_alert(f"Connection closed: {e}")
         except Exception as e:
             logger.error(f"Error in message handler: {e}")
             if not self._stop_event.is_set():
                 self.state = ConnectionState.RECONNECTING
+                await self._trigger_disconnect_alert(f"Error: {e}")
+
+    async def _trigger_disconnect_alert(self, reason: str):
+        """Trigger disconnect alert with deduplication"""
+        if not self.on_disconnect_callback:
+            return
+
+        async with self._disconnect_alert_lock:
+            if self._disconnect_alert_sent:
+                return
+            self._disconnect_alert_sent = True
+
+        try:
+            await self.on_disconnect_callback(reason)
+        except Exception as cb_err:
+            logger.error(f"Error in disconnect callback: {cb_err}")
+
+    async def _reset_disconnect_alert_flag(self):
+        """Reset disconnect alert flag after successful reconnection"""
+        async with self._disconnect_alert_lock:
+            self._disconnect_alert_sent = False
 
     async def _ping_handler(self):
         """Send periodic ping frames to keep connection alive"""
@@ -636,6 +668,7 @@ class BinanceWebSocketClient:
 
             except Exception as e:
                 logger.error(f"Error sending ping: {e}")
+                await self._trigger_disconnect_alert(f"Ping failed: {e}")
                 break
 
     async def _connect(self) -> bool:
@@ -699,7 +732,13 @@ class BinanceWebSocketClient:
 
             success = await self._connect()
             if success:
-                # Connection successful, exit reconnect loop
+                # Connection successful, reset alert flag and call callback
+                await self._reset_disconnect_alert_flag()
+                if self.on_reconnect_callback:
+                    try:
+                        await self.on_reconnect_callback(self.reconnect_count + 1)
+                    except Exception as cb_err:
+                        logger.error(f"Error in reconnect callback: {cb_err}")
                 return
 
             self.reconnect_count += 1

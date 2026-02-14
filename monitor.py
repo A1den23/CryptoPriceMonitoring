@@ -618,11 +618,113 @@ class WebSocketMultiCoinMonitor:
         # Get list of symbols to monitor
         symbols = list(self.monitors.keys())
 
+        # Track alert state
+        self._disconnect_alert_time: Optional[datetime] = None
+        self._last_disconnect_reason: Optional[str] = None
+
+    async def _on_disconnect(self, reason: str):
+        """Handle WebSocket disconnect event"""
+        self._last_disconnect_reason = reason
+        self._disconnect_alert_time = datetime.now(UTC8)
+
+        # Get first enabled coin name for logging context
+        enabled_coins = self.config.get_enabled_coins()
+        coin = enabled_coins[0].coin_name if enabled_coins else "System"
+
+        message = (
+            f"🚨🚨【连接断开警报】🚨🚨\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ 价格监控连接已中断！\n"
+            f"📡 连接状态: 已断开\n"
+            f"🔍 断开原因: {reason}\n"
+            f"⏱️ {self._disconnect_alert_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"💡 系统正在尝试自动重连..."
+        )
+
+        # Use async notification to avoid blocking
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+            def on_done(t):
+                if t.cancelled():
+                    return
+                err = t.exception()
+                if err:
+                    logger.error(f"Disconnect alert failed: {err}")
+                else:
+                    logger.info(f"Disconnect alert sent: {t.result()}")
+            task.add_done_callback(on_done)
+        except Exception as e:
+            logger.error(f"Failed to send disconnect alert: {e}")
+
+    async def _on_reconnect(self, attempt_count: int):
+        """Handle WebSocket reconnect success"""
+        now = datetime.now(UTC8)
+        downtime = ""
+        if self._disconnect_alert_time:
+            downtime_seconds = (now - self._disconnect_alert_time).total_seconds()
+            if downtime_seconds < 60:
+                downtime = f"{int(downtime_seconds)}秒"
+            elif downtime_seconds < 3600:
+                downtime = f"{int(downtime_seconds // 60)}分{int(downtime_seconds % 60)}秒"
+            else:
+                downtime = f"{int(downtime_seconds // 3600)}小时{int((downtime_seconds % 3600) // 60)}分"
+
+        message = (
+            f"✅✅【连接恢复通知】✅✅\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"📡 价格监控已恢复正常\n"
+            f"🔄 重连次数: {attempt_count} 次\n"
+            f"⏱️ 中断时长: {downtime if downtime else '未知'}\n"
+            f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"━━━━━━━━━━━━━━━━━"
+        )
+
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+            def on_done(t):
+                if t.cancelled():
+                    return
+                err = t.exception()
+                if err:
+                    logger.error(f"Reconnect alert failed: {err}")
+                else:
+                    logger.info(f"Reconnect alert sent: {t.result()}")
+            task.add_done_callback(on_done)
+            self._disconnect_alert_time = None
+            self._last_disconnect_reason = None
+        except Exception as e:
+            logger.error(f"Failed to send reconnect alert: {e}")
+
+    async def run(self):
+        """Start WebSocket monitoring"""
+        print(f"\n{'='*60}")
+        print(f"Starting Multi-Coin Price Monitor (WebSocket Mode)")
+        print(f"{'='*60}")
+        print(f"Monitored coins: {len(self.monitors)}")
+        print(f"Connection: Real-time WebSocket (10-50ms latency)")
+        print(f"{'='*60}\n")
+
+        if not self.monitors:
+            logger.error("No enabled coins configured. Set *_ENABLED=true for at least one coin.")
+            return
+
+        # Test Telegram connection
+        if not self.notifier.test_connection():
+            logger.warning("Failed to send test message. Check your Telegram configuration.")
+
+        # Get list of symbols to monitor
+        symbols = list(self.monitors.keys())
+
         # Create WebSocket client
         self.ws_client = BinanceWebSocketClient(
             symbols=symbols,
             on_price_callback=self._on_price_update,
             on_kline_callback=self._on_kline_update,
+            on_disconnect_callback=self._on_disconnect,
+            on_reconnect_callback=self._on_reconnect,
             reconnect_delay=5.0,
             ping_interval=30.0,
             max_reconnect_attempts=None,  # Infinite reconnect
