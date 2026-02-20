@@ -32,12 +32,12 @@ services:
           "CMD",
           "python",
           "-c",
-          "import pathlib,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); sys.exit(0 if b'monitor.py' in c else 1)"
+          "import pathlib,time,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); h=pathlib.Path('/tmp/monitor_heartbeat'); ok=(b'monitor.py' in c and h.exists() and (time.time()-h.stat().st_mtime)<180); sys.exit(0 if ok else 1)"
         ]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 45s
     # 日志配置
     logging:
       driver: "json-file"
@@ -79,12 +79,12 @@ services:
           "CMD",
           "python",
           "-c",
-          "import pathlib,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); sys.exit(0 if b'bot.py' in c else 1)"
+          "import pathlib,time,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); h=pathlib.Path('/tmp/bot_heartbeat'); ok=(b'bot.py' in c and h.exists() and (time.time()-h.stat().st_mtime)<180); sys.exit(0 if ok else 1)"
         ]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 45s
     # 日志配置
     logging:
       driver: "json-file"

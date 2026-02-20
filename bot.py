@@ -6,8 +6,10 @@ Provides interactive commands and buttons to query cryptocurrency prices
 
 import asyncio
 import signal
+import os
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -56,8 +58,24 @@ class TelegramBot:
 
         # Track start time
         self.start_time: Optional[datetime] = None
+        self._heartbeat_file = Path(os.getenv("BOT_HEARTBEAT_FILE", "/tmp/bot_heartbeat"))
+        self._heartbeat_interval = float(os.getenv("BOT_HEARTBEAT_INTERVAL_SECONDS", "30"))
 
         logger.info("Telegram Bot initialized successfully")
+
+    def _touch_heartbeat(self):
+        """Touch heartbeat file to indicate bot event loop is alive."""
+        try:
+            self._heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+            self._heartbeat_file.touch()
+        except OSError as e:
+            logger.warning(f"Failed to update bot heartbeat file '{self._heartbeat_file}': {e}")
+
+    async def _heartbeat_loop(self):
+        """Periodically refresh heartbeat file while event loop is healthy."""
+        while not self._shutdown_event.is_set():
+            self._touch_heartbeat()
+            await asyncio.sleep(self._heartbeat_interval)
 
     async def _get_price(self, symbol: str) -> Optional[float]:
         """Fetch price using async HTTP client"""
@@ -410,9 +428,11 @@ class TelegramBot:
     async def run_async(self):
         """Start the bot asynchronously"""
         logger.info("Starting Telegram Bot polling...")
+        self._touch_heartbeat()
 
         # Record start time
         self.start_time = datetime.now(UTC8)
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         async with AsyncBinancePriceFetcher() as fetcher:
             self.fetcher = fetcher
@@ -429,6 +449,11 @@ class TelegramBot:
             finally:
                 # Graceful shutdown
                 logger.info("Stopping Telegram Bot...")
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
                 await self.application.updater.stop()
                 await self.application.stop()
                 await self.application.shutdown()

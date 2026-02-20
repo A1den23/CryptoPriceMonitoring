@@ -149,6 +149,10 @@ class ConfigManager:
         self.volatility_alert_cooldown_seconds = int(os.getenv("VOLATILITY_ALERT_COOLDOWN_SECONDS", "60"))
         # Milestone alert cooldown (global cooldown for any milestone crossing)
         self.milestone_alert_cooldown_seconds = int(os.getenv("MILESTONE_ALERT_COOLDOWN_SECONDS", "600"))
+        # WebSocket keepalive and stale-connection detection
+        self.ws_ping_interval_seconds = float(os.getenv("WS_PING_INTERVAL_SECONDS", "30"))
+        self.ws_pong_timeout_seconds = float(os.getenv("WS_PONG_TIMEOUT_SECONDS", "10"))
+        self.ws_message_timeout_seconds = float(os.getenv("WS_MESSAGE_TIMEOUT_SECONDS", "120"))
 
         # Get coin list from env or use default
         coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")
@@ -411,6 +415,8 @@ class BinanceWebSocketClient:
         on_reconnect_callback: Optional[Callable[[int], Awaitable[None]]] = None,
         reconnect_delay: float = 5.0,
         ping_interval: float = 30.0,
+        pong_timeout: float = 10.0,
+        message_timeout: float = 120.0,
         max_reconnect_attempts: int = None,
     ):
         """
@@ -424,6 +430,8 @@ class BinanceWebSocketClient:
             on_reconnect_callback: Optional async callback when reconnection successful (attempt_count)
             reconnect_delay: Delay between reconnection attempts (seconds)
             ping_interval: Interval for sending ping frames (seconds)
+            pong_timeout: Timeout waiting for ping response (seconds)
+            message_timeout: Max allowed seconds without any market message before reconnect
             max_reconnect_attempts: Maximum reconnection attempts (None = infinite)
         """
         if not symbols:
@@ -436,6 +444,8 @@ class BinanceWebSocketClient:
         self.on_reconnect_callback = on_reconnect_callback
         self.reconnect_delay = reconnect_delay
         self.ping_interval = ping_interval
+        self.pong_timeout = pong_timeout
+        self.message_timeout = message_timeout
         self.max_reconnect_attempts = max_reconnect_attempts
 
         # Connection state
@@ -445,6 +455,7 @@ class BinanceWebSocketClient:
         self._stop_event = asyncio.Event()
         self._message_task: Optional[asyncio.Task] = None
         self._ping_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
 
         # Alert tracking (prevent duplicate disconnect alerts)
         self._disconnect_alert_sent = False
@@ -653,23 +664,65 @@ class BinanceWebSocketClient:
 
     async def _ping_handler(self):
         """Send periodic ping frames to keep connection alive"""
-        logger.info(f"Ping handler started (interval: {self.ping_interval}s)")
+        logger.info(
+            f"Ping handler started (interval: {self.ping_interval}s, pong timeout: {self.pong_timeout}s)"
+        )
 
         while not self._stop_event.is_set() and self.state == ConnectionState.CONNECTED:
             try:
                 await asyncio.sleep(self.ping_interval)
 
                 if self.websocket and not self.websocket.closed:
-                    # Send WebSocket ping
-                    await self.websocket.ping()
+                    # Send ping and require timely pong, otherwise force reconnect.
+                    pong_waiter = await self.websocket.ping()
+                    await asyncio.wait_for(pong_waiter, timeout=self.pong_timeout)
                     logger.debug("Ping sent")
                 else:
                     break
 
+            except asyncio.TimeoutError:
+                reason = f"Ping timed out (>{self.pong_timeout}s without pong)"
+                logger.error(reason)
+                await self._trigger_disconnect_alert(reason)
+                if self.websocket and not self.websocket.closed:
+                    await self.websocket.close()
+                self.state = ConnectionState.RECONNECTING
+                break
             except Exception as e:
                 logger.error(f"Error sending ping: {e}")
                 await self._trigger_disconnect_alert(f"Ping failed: {e}")
+                if self.websocket and not self.websocket.closed:
+                    await self.websocket.close()
+                self.state = ConnectionState.RECONNECTING
                 break
+
+    async def _connection_watchdog(self):
+        """Reconnect when the socket is connected but no market data arrives for too long."""
+        check_interval = max(2.0, min(self.ping_interval, 10.0))
+        logger.info(
+            f"Connection watchdog started (message timeout: {self.message_timeout}s, check every: {check_interval}s)"
+        )
+
+        while not self._stop_event.is_set() and self.state == ConnectionState.CONNECTED:
+            await asyncio.sleep(check_interval)
+
+            if self.state != ConnectionState.CONNECTED:
+                break
+
+            if not self.last_message_time:
+                continue
+
+            silence_seconds = (datetime.now(UTC8) - self.last_message_time).total_seconds()
+            if silence_seconds <= self.message_timeout:
+                continue
+
+            reason = f"No market messages for {int(silence_seconds)}s (timeout={self.message_timeout}s)"
+            logger.error(reason)
+            await self._trigger_disconnect_alert(reason)
+            self.state = ConnectionState.RECONNECTING
+            if self.websocket and not self.websocket.closed:
+                await self.websocket.close()
+            break
 
     async def _connect(self) -> bool:
         """Establish WebSocket connection"""
@@ -692,6 +745,7 @@ class BinanceWebSocketClient:
             self.state = ConnectionState.CONNECTED
             self.connection_time = datetime.now(UTC8)
             self.reconnect_count = 0
+            self.last_message_time = datetime.now(UTC8)
 
             logger.info("✅ WebSocket connected successfully")
 
@@ -700,6 +754,8 @@ class BinanceWebSocketClient:
 
             # Start ping handler
             self._ping_task = asyncio.create_task(self._ping_handler())
+            # Start message freshness watchdog
+            self._watchdog_task = asyncio.create_task(self._connection_watchdog())
 
             return True
 
@@ -723,7 +779,8 @@ class BinanceWebSocketClient:
                 break
 
             # Wait before reconnecting
-            logger.info(f"Reconnecting in {self.reconnect_delay}s... (attempt {self.reconnect_count + 1})")
+            attempt_no = self.reconnect_count + 1
+            logger.info(f"Reconnecting in {self.reconnect_delay}s... (attempt {attempt_no})")
             await asyncio.sleep(self.reconnect_delay)
 
             # Attempt reconnection
@@ -736,12 +793,12 @@ class BinanceWebSocketClient:
                 await self._reset_disconnect_alert_flag()
                 if self.on_reconnect_callback:
                     try:
-                        await self.on_reconnect_callback(self.reconnect_count + 1)
+                        await self.on_reconnect_callback(attempt_no)
                     except Exception as cb_err:
                         logger.error(f"Error in reconnect callback: {cb_err}")
                 return
 
-            self.reconnect_count += 1
+            self.reconnect_count = attempt_no
 
     async def start(self):
         """
@@ -785,6 +842,13 @@ class BinanceWebSocketClient:
                     except asyncio.CancelledError:
                         pass
 
+                if self._watchdog_task:
+                    self._watchdog_task.cancel()
+                    try:
+                        await self._watchdog_task
+                    except asyncio.CancelledError:
+                        pass
+
                 # Enter reconnection loop
                 await self._reconnect_loop()
 
@@ -806,6 +870,8 @@ class BinanceWebSocketClient:
             self._message_task.cancel()
         if self._ping_task:
             self._ping_task.cancel()
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
 
         # Close WebSocket
         if self.websocket:

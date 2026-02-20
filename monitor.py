@@ -13,9 +13,11 @@ import sys
 import asyncio
 import signal
 import math
+import os
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List, Dict
+from pathlib import Path
 
 from common import (
     setup_logging,
@@ -475,6 +477,12 @@ class WebSocketMultiCoinMonitor:
         # Shutdown handling
         self._shutdown_event = asyncio.Event()
         self._setup_signal_handlers()
+        self._disconnect_alert_time: Optional[datetime] = None
+        self._last_disconnect_reason: Optional[str] = None
+
+        # Heartbeat file: touched when fresh market updates are processed.
+        self._heartbeat_file = Path(os.getenv("MONITOR_HEARTBEAT_FILE", "/tmp/monitor_heartbeat"))
+        self._last_heartbeat_touch: Optional[datetime] = None
 
     def _load_monitors(self):
         """Load monitors from configuration"""
@@ -597,30 +605,20 @@ class WebSocketMultiCoinMonitor:
         except (OSError, IOError):
             # Handle broken pipe when running in background
             pass
+        finally:
+            self._touch_heartbeat()
 
-    async def run(self):
-        """Start WebSocket monitoring"""
-        print(f"\n{'='*60}")
-        print(f"Starting Multi-Coin Price Monitor (WebSocket Mode)")
-        print(f"{'='*60}")
-        print(f"Monitored coins: {len(self.monitors)}")
-        print(f"Connection: Real-time WebSocket (10-50ms latency)")
-        print(f"{'='*60}\n")
-
-        if not self.monitors:
-            logger.error("No enabled coins configured. Set *_ENABLED=true for at least one coin.")
+    def _touch_heartbeat(self):
+        """Touch heartbeat file to indicate monitor is actively receiving market updates."""
+        now = datetime.now(UTC8)
+        if self._last_heartbeat_touch and (now - self._last_heartbeat_touch).total_seconds() < 1:
             return
-
-        # Test Telegram connection
-        if not self.notifier.test_connection():
-            logger.warning("Failed to send test message. Check your Telegram configuration.")
-
-        # Get list of symbols to monitor
-        symbols = list(self.monitors.keys())
-
-        # Track alert state
-        self._disconnect_alert_time: Optional[datetime] = None
-        self._last_disconnect_reason: Optional[str] = None
+        try:
+            self._heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+            self._heartbeat_file.touch()
+            self._last_heartbeat_touch = now
+        except OSError as e:
+            logger.warning(f"Failed to update monitor heartbeat file '{self._heartbeat_file}': {e}")
 
     async def _on_disconnect(self, reason: str):
         """Handle WebSocket disconnect event"""
@@ -717,6 +715,7 @@ class WebSocketMultiCoinMonitor:
 
         # Get list of symbols to monitor
         symbols = list(self.monitors.keys())
+        self._touch_heartbeat()
 
         # Create WebSocket client
         self.ws_client = BinanceWebSocketClient(
@@ -726,7 +725,9 @@ class WebSocketMultiCoinMonitor:
             on_disconnect_callback=self._on_disconnect,
             on_reconnect_callback=self._on_reconnect,
             reconnect_delay=5.0,
-            ping_interval=30.0,
+            ping_interval=self.config.ws_ping_interval_seconds,
+            pong_timeout=self.config.ws_pong_timeout_seconds,
+            message_timeout=self.config.ws_message_timeout_seconds,
             max_reconnect_attempts=None,  # Infinite reconnect
         )
 
