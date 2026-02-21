@@ -14,7 +14,7 @@ This module is organized into submodules for better maintainability:
 from .config import ConfigManager, CoinConfig
 
 # Logging
-from .logging import setup_logging, get_logger, logger
+from .logging import setup_logging, logger, get_logger
 
 # HTTP and WebSocket clients
 from .clients.http import BinancePriceFetcher, AsyncBinancePriceFetcher, BinanceAPIError
@@ -30,9 +30,8 @@ from .utils import (
     get_coin_display_name,
     get_configured_timezone,
     now_in_configured_timezone,
-    UTC8,
     TZ,
-    _restore_signal_handler,
+    UTC8,
 )
 
 __all__ = [
@@ -41,8 +40,8 @@ __all__ = [
     'CoinConfig',
     # Logging
     'setup_logging',
-    'get_logger',
     'logger',
+    'get_logger',
     # Clients
     'BinancePriceFetcher',
     'AsyncBinancePriceFetcher',
@@ -57,7 +56,6 @@ __all__ = [
     'get_coin_display_name',
     'get_configured_timezone',
     'now_in_configured_timezone',
-    'UTC8',
     'TZ',
-    '_restore_signal_handler',
+    'UTC8',
 ]

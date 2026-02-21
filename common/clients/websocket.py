@@ -4,10 +4,10 @@ WebSocket client for Binance real-time price streams
 
 import asyncio
 import json
+import re
 from datetime import datetime
-from enum import Enum
-from typing import Optional, List, Callable, Awaitable, Tuple
-from urllib.parse import quote
+from enum import Enum, auto
+from typing import Awaitable, Callable
 
 import websockets
 
@@ -16,12 +16,12 @@ from ..utils import get_configured_timezone
 
 
 class ConnectionState(Enum):
-    """WebSocket connection states"""
-    DISCONNECTED = "disconnected"
-    CONNECTING = "connecting"
-    CONNECTED = "connected"
-    RECONNECTING = "reconnecting"
-    STOPPED = "stopped"
+    """WebSocket connection states."""
+    DISCONNECTED = auto()
+    CONNECTING = auto()
+    CONNECTED = auto()
+    RECONNECTING = auto()
+    STOPPED = auto()
 
 
 class BinanceWebSocketClient:
@@ -33,21 +33,21 @@ class BinanceWebSocketClient:
     BASE_WS_URL = "wss://stream.binance.com:9443/ws"
     BASE_COMBINED_WS_URL = "wss://stream.binance.com:9443/stream"
 
-    VALID_SYMBOL_PATTERN = __import__('re').compile(r'^[A-Z0-9]+$')
+    _VALID_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9]+$')
 
     def __init__(
         self,
-        symbols: List[str],
+        symbols: list[str],
         on_price_callback: Callable[[str, float], Awaitable[None]],
-        on_kline_callback: Optional[Callable[[str, float, float, bool], Awaitable[None]]] = None,
-        on_disconnect_callback: Optional[Callable[[str], Awaitable[None]]] = None,
-        on_reconnect_callback: Optional[Callable[[int], Awaitable[None]]] = None,
+        on_kline_callback: Callable[[str, float, float, bool], Awaitable[None]] | None = None,
+        on_disconnect_callback: Callable[[str], Awaitable[None]] | None = None,
+        on_reconnect_callback: Callable[[int], Awaitable[None]] | None = None,
         reconnect_delay: float = 5.0,
         ping_interval: float = 30.0,
         pong_timeout: float = 10.0,
         message_timeout: float = 120.0,
-        max_reconnect_attempts: int = None,
-    ):
+        max_reconnect_attempts: int | None = None,
+    ) -> None:
         if not symbols:
             raise ValueError("At least one symbol is required for BinanceWebSocketClient")
 
@@ -64,12 +64,12 @@ class BinanceWebSocketClient:
 
         # Connection state
         self.state = ConnectionState.DISCONNECTED
-        self.websocket: Optional[websockets.client.WebSocketClientProtocol] = None
+        self.websocket: websockets.client.WebSocketClientProtocol | None = None
         self.reconnect_count = 0
         self._stop_event = asyncio.Event()
-        self._message_task: Optional[asyncio.Task] = None
-        self._ping_task: Optional[asyncio.Task] = None
-        self._watchdog_task: Optional[asyncio.Task] = None
+        self._message_task: asyncio.Task | None = None
+        self._ping_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
 
         # Alert tracking (prevent duplicate disconnect alerts)
         self._disconnect_alert_sent = False
@@ -77,25 +77,24 @@ class BinanceWebSocketClient:
 
         # Statistics
         self.messages_received = 0
-        self.last_message_time: Optional[datetime] = None
-        self.connection_time: Optional[datetime] = None
+        self.last_message_time: datetime | None = None
+        self.connection_time: datetime | None = None
 
         logger.info(f"BinanceWebSocketClient initialized for {len(symbols)} symbols")
 
     def _build_stream_url(self) -> str:
-        """Build WebSocket URL with subscribed streams (ticker + kline)"""
-        streams = []
+        """Build WebSocket URL with subscribed streams (ticker + kline)."""
+        streams: list[str] = []
         for symbol in self.symbols:
             # Validate symbol format
-            if not symbol or not self.VALID_SYMBOL_PATTERN.match(symbol):
+            if not symbol or not self._VALID_SYMBOL_PATTERN.match(symbol):
                 logger.warning(f"Invalid symbol format: {symbol}")
                 continue
 
             symbol_lower = symbol.lower()
-            safe_symbol = quote(symbol_lower, safe='')
-            streams.append(f"{safe_symbol}@ticker")
+            streams.append(f"{symbol_lower}@ticker")
             if self.on_kline_callback:
-                streams.append(f"{safe_symbol}@kline_1m")
+                streams.append(f"{symbol_lower}@kline_1m")
 
         if not streams:
             raise ValueError("No valid streams configured for WebSocket connection")
@@ -107,8 +106,8 @@ class BinanceWebSocketClient:
         """Get current time in configured timezone."""
         return datetime.now(get_configured_timezone())
 
-    def _parse_ticker_message(self, data: dict) -> Tuple[str, float]:
-        """Parse Binance ticker message"""
+    def _parse_ticker_message(self, data: dict) -> tuple[str, float]:
+        """Parse Binance ticker message."""
         try:
             # Combined stream format
             if "stream" in data and "data" in data:
@@ -124,8 +123,8 @@ class BinanceWebSocketClient:
             logger.error(f"Failed to parse ticker message: {e}")
             raise
 
-    def _parse_kline_message(self, data: dict) -> Optional[Tuple[str, float, float, bool]]:
-        """Parse Binance kline message"""
+    def _parse_kline_message(self, data: dict) -> tuple[str, float, float, bool] | None:
+        """Parse Binance kline message."""
         try:
             # Combined stream format
             if "stream" in data and "data" in data:
@@ -166,43 +165,46 @@ class BinanceWebSocketClient:
                     data = json.loads(message)
 
                     # Handle different message types
-                    if isinstance(data, dict):
-                        # Ticker update
-                        if data.get("e") == "24hrTicker" or ("stream" in data and "data" in data and data["data"].get("e") == "24hrTicker"):
-                            symbol, price = self._parse_ticker_message(data)
+                    if not isinstance(data, dict):
+                        continue
 
-                            # Update statistics
-                            self.messages_received += 1
-                            self.last_message_time = self._now()
+                    event_type = data.get("e")
+                    inner_event = data.get("data", {}).get("e") if "stream" in data and "data" in data else None
 
-                            # Call user callback
-                            try:
-                                await self.on_price_callback(symbol, price)
-                            except BrokenPipeError:
-                                pass
-                            except Exception:
-                                logger.exception("Error in price callback")
+                    # Ticker update
+                    if event_type == "24hrTicker" or inner_event == "24hrTicker":
+                        symbol, price = self._parse_ticker_message(data)
 
-                        # Kline update
-                        elif data.get("e") == "kline" or ("stream" in data and "data" in data and data["data"].get("e") == "kline"):
-                            if self.on_kline_callback:
-                                kline_data = self._parse_kline_message(data)
-                                if kline_data:
-                                    symbol, price, volume, is_closed = kline_data
+                        # Update statistics
+                        self.messages_received += 1
+                        self.last_message_time = self._now()
 
-                                    # Only process when kline is closed
-                                    if is_closed:
-                                        # Update statistics
-                                        self.messages_received += 1
-                                        self.last_message_time = self._now()
+                        # Call user callback
+                        try:
+                            await self.on_price_callback(symbol, price)
+                        except BrokenPipeError:
+                            pass
+                        except Exception:
+                            logger.exception("Error in price callback")
 
-                                        # Call user callback
-                                        try:
-                                            await self.on_kline_callback(symbol, price, volume, is_closed)
-                                        except BrokenPipeError:
-                                            pass
-                                        except Exception:
-                                            logger.exception("Error in kline callback")
+                    # Kline update
+                    elif event_type == "kline" or inner_event == "kline":
+                        if self.on_kline_callback:
+                            kline_data = self._parse_kline_message(data)
+                            if kline_data and kline_data[3]:  # is_closed
+                                symbol, price, volume, _ = kline_data
+
+                                # Update statistics
+                                self.messages_received += 1
+                                self.last_message_time = self._now()
+
+                                # Call user callback
+                                try:
+                                    await self.on_kline_callback(symbol, price, volume, True)
+                                except BrokenPipeError:
+                                    pass
+                                except Exception:
+                                    logger.exception("Error in kline callback")
 
                         # Subscription confirmation
                         elif "result" in data:
@@ -468,9 +470,9 @@ class BinanceWebSocketClient:
         logger.info("WebSocket client stopped")
 
     def get_statistics(self) -> dict:
-        """Get connection statistics"""
+        """Get connection statistics."""
         return {
-            "state": self.state.value,
+            "state": self.state.name.lower(),
             "messages_received": self.messages_received,
             "reconnect_count": self.reconnect_count,
             "connection_time": self.connection_time.isoformat() if self.connection_time else None,
@@ -483,7 +485,7 @@ class BinanceWebSocketClient:
         }
 
     def is_connected(self) -> bool:
-        """Check if WebSocket is connected"""
+        """Check if WebSocket is connected."""
         return (
             self.state == ConnectionState.CONNECTED
             and self.websocket is not None

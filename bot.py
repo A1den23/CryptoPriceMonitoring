@@ -5,12 +5,11 @@ Provides interactive commands and buttons to query cryptocurrency prices
 """
 
 import asyncio
-import signal
+import math
 import os
 import re
-import math
+import signal
 from datetime import datetime
-from typing import Optional
 from pathlib import Path
 from difflib import get_close_matches
 
@@ -41,7 +40,7 @@ class TelegramBot:
         if not self.config.telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 
-        self.fetcher: Optional[AsyncBinancePriceFetcher] = None
+        self.fetcher: AsyncBinancePriceFetcher | None = None
         self.notifier = TelegramNotifier()
 
         # Create application
@@ -60,17 +59,24 @@ class TelegramBot:
         self._setup_signal_handlers()
 
         # Track start time
-        self.start_time: Optional[datetime] = None
+        self.start_time: datetime | None = None
         self._heartbeat_file = Path(os.getenv("BOT_HEARTBEAT_FILE", "/tmp/bot_heartbeat"))
-        try:
-            heartbeat_interval = float(os.getenv("BOT_HEARTBEAT_INTERVAL_SECONDS", "30"))
-            self._heartbeat_interval = heartbeat_interval if (math.isfinite(heartbeat_interval) and heartbeat_interval > 0) else 30.0
-        except (TypeError, ValueError):
-            self._heartbeat_interval = 30.0
+        self._heartbeat_interval = self._parse_heartbeat_interval()
 
         logger.info("Telegram Bot initialized successfully")
 
-    def _touch_heartbeat(self):
+    @staticmethod
+    def _parse_heartbeat_interval() -> float:
+        """Parse heartbeat interval from environment."""
+        try:
+            heartbeat_interval = float(os.getenv("BOT_HEARTBEAT_INTERVAL_SECONDS", "30"))
+            if math.isfinite(heartbeat_interval) and heartbeat_interval > 0:
+                return heartbeat_interval
+        except (TypeError, ValueError):
+            pass
+        return 30.0
+
+    def _touch_heartbeat(self) -> None:
         """Touch heartbeat file to indicate bot event loop is alive."""
         try:
             self._heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
@@ -84,26 +90,26 @@ class TelegramBot:
             self._touch_heartbeat()
             await asyncio.sleep(self._heartbeat_interval)
 
-    async def _get_price(self, symbol: str) -> Optional[float]:
-        """Fetch price using async HTTP client"""
+    async def _get_price(self, symbol: str) -> float | None:
+        """Fetch price using async HTTP client."""
         if not self.fetcher:
             logger.error("Async fetcher not initialized")
             return None
         try:
             return await self.fetcher.get_current_price(symbol)
-        except Exception as e:
-            logger.error(f"Error fetching price for {symbol}: {e}")
+        except Exception:
+            logger.exception(f"Error fetching price for {symbol}")
             return None
 
-    async def _get_prices(self, symbols) -> dict:
-        """Fetch multiple prices concurrently using async HTTP client"""
+    async def _get_prices(self, symbols: list[str]) -> dict[str, float | None]:
+        """Fetch multiple prices concurrently using async HTTP client."""
         if not self.fetcher:
             logger.error("Async fetcher not initialized")
             return {symbol: None for symbol in symbols}
         try:
             return await self.fetcher.get_multiple_prices(symbols)
-        except Exception as e:
-            logger.error(f"Error fetching multiple prices: {e}")
+        except Exception:
+            logger.exception("Error fetching multiple prices")
             return {symbol: None for symbol in symbols}
 
     def _format_uptime(self) -> str:
@@ -131,19 +137,27 @@ class TelegramBot:
         self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
         logger.debug("Signal handlers registered (bot)")
 
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals (SIGINT, SIGTERM)"""
+    def _signal_handler(self, signum: int, frame) -> None:
+        """Handle shutdown signals (SIGINT, SIGTERM)."""
         sig_name = signal.Signals(signum).name
         logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
 
         # Restore original signal handler FIRST to prevent race condition
         # This ensures a second signal triggers immediate termination
-        from common import _restore_signal_handler
         original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
-        _restore_signal_handler(signum, original_handler)
+        self._restore_signal_handler(signum, original_handler)
 
         # Set the shutdown event to stop the bot (thread-safe)
         self._shutdown_event.set()
+
+    @staticmethod
+    def _restore_signal_handler(signum: int, original_handler) -> None:
+        """Restore original signal handler, handling cross-platform differences."""
+        try:
+            signal.signal(signum, original_handler)
+        except (ValueError, OSError):
+            # Signal might not be available on this platform (e.g., Windows)
+            pass
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -545,15 +559,6 @@ def main():
         print("\nPlease make sure TELEGRAM_BOT_TOKEN is set in your .env file")
     except KeyboardInterrupt:
         logger.info("Bot stopped by user (KeyboardInterrupt)")
-
-        # Send shutdown notification
-        shutdown_message = (
-            "👋 <b>Telegram Interactive Bot Stopped</b>\n\n"
-            "Bot has been shut down gracefully.\n\n"
-            f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        notifier.send_message(shutdown_message)
-        logger.info("Shutdown notification sent")
 
 
 if __name__ == "__main__":

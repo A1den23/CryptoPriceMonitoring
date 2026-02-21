@@ -29,6 +29,7 @@ wheels/
 # Python virtual env
 .venv/
 .env/
+.env
 
 # Logs
 *.log

@@ -3,11 +3,10 @@ Utility functions for Crypto Price Monitoring Bot
 """
 
 import os
-import signal
 from datetime import datetime, timezone, timedelta
 
 
-def get_configured_timezone():
+def get_configured_timezone() -> timezone:
     """Get configured timezone, defaults to Asia/Shanghai (UTC+8)"""
     tz_name = os.getenv("TIMEZONE", "Asia/Shanghai")
     try:
@@ -45,21 +44,13 @@ def now_in_configured_timezone() -> datetime:
     return datetime.now(get_configured_timezone())
 
 
-# Timezone configuration
-# For backwards compatibility, UTC8 is always UTC+8
-UTC8 = timezone(timedelta(hours=8))
-# TZ remains for backwards compatibility only.
+# Timezone configuration (backwards compatibility)
 # Use get_configured_timezone() or now_in_configured_timezone() for runtime values.
 TZ = get_configured_timezone()
 
-
-def _restore_signal_handler(signum: int, original_handler):
-    """Restore original signal handler, handling cross-platform differences"""
-    try:
-        signal.signal(signum, original_handler)
-    except (ValueError, OSError):
-        # Signal might not be available on this platform (e.g., Windows)
-        pass
+# UTC+8 timezone constant (backwards compatibility)
+# Deprecated: Use TZ or get_configured_timezone() instead
+UTC8 = TZ
 
 
 def format_price(price: float) -> str:

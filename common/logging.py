@@ -2,27 +2,24 @@
 Logging utilities for Crypto Price Monitoring Bot
 """
 
-import os
 import logging
+import os
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 
-def _resolve_log_level(level: Optional[Union[int, str]]) -> int:
-    """Resolve log level from explicit value or LOG_LEVEL/DEBUG env"""
+def _resolve_log_level(level: Union[int, str, None]) -> int:
+    """Resolve log level from explicit value or LOG_LEVEL/DEBUG env."""
     if level is not None:
         if isinstance(level, str):
             name = level.strip().upper()
-            if name in logging._nameToLevel:
-                return logging._nameToLevel[name]
-            return logging.INFO
+            return logging._nameToLevel.get(name, logging.INFO)
         return level
 
     env_level = os.getenv("LOG_LEVEL")
     if env_level:
         name = env_level.strip().upper()
-        if name in logging._nameToLevel:
-            return logging._nameToLevel[name]
+        return logging._nameToLevel.get(name, logging.INFO)
 
     if os.getenv("DEBUG", "false").lower() == "true":
         return logging.DEBUG
@@ -30,29 +27,37 @@ def _resolve_log_level(level: Optional[Union[int, str]]) -> int:
     return logging.INFO
 
 
-def setup_logging(log_file: str = "logs/monitor.log", level: Optional[Union[int, str]] = None):
-    """Setup structured logging with file and console handlers"""
-    handlers = [logging.StreamHandler()]
+def setup_logging(
+    log_file: str = "logs/monitor.log",
+    level: Union[int, str, None] = None,
+) -> logging.Logger:
+    """Setup structured logging with file and console handlers."""
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
 
     # Try to add file handler, fall back to console only if permission denied
     try:
         # Validate log file path to prevent directory traversal
         log_path = Path(log_file).resolve()
 
-        # Get allowed base directory (current working directory or /app in Docker)
-        allowed_base = Path.cwd().resolve()
-        if Path("/app").exists():
-            allowed_base = Path("/app").resolve()
+        # Get allowed base directories (current working directory or /app in Docker)
+        # Both paths are resolved immediately to prevent race conditions with symlinks
+        allowed_bases = [Path.cwd().resolve()]
+        app_path = Path("/app")
+        if app_path.exists() and app_path.is_dir():
+            allowed_bases.append(app_path.resolve())
 
-        # Check if log path is within allowed directory
-        try:
-            log_path.relative_to(allowed_base)
-        except ValueError:
-            raise ValueError(f"Log file path '{log_file}' is outside allowed directory '{allowed_base}'")
+        # Check if log path is within any allowed directory
+        is_allowed = any(
+            log_path.is_relative_to(base) for base in allowed_bases
+        )
+        if not is_allowed:
+            allowed_paths = ", ".join(str(b) for b in allowed_bases)
+            raise ValueError(
+                f"Log file path '{log_file}' is outside allowed directories: {allowed_paths}"
+            )
 
         # Create logs directory if it doesn't exist
-        log_dir = log_path.parent
-        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Add file handler
         handlers.append(logging.FileHandler(str(log_path)))
@@ -64,9 +69,9 @@ def setup_logging(log_file: str = "logs/monitor.log", level: Optional[Union[int,
     # Configure logging
     resolved_level = _resolve_log_level(level)
     logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
         level=resolved_level,
-        handlers=handlers
+        handlers=handlers,
     )
 
     # Reduce sensitive/noisy logs (prevents Telegram bot token from appearing)
@@ -77,10 +82,26 @@ def setup_logging(log_file: str = "logs/monitor.log", level: Optional[Union[int,
     return logging.getLogger(__name__)
 
 
-def get_logger():
-    """Get the configured logger"""
-    return logging.getLogger(__name__)
-
-
 # Module-level logger (configured after setup_logging is called)
 logger = logging.getLogger(__name__)
+
+
+def get_logger(name: str | None = None) -> logging.Logger:
+    """[DEPRECATED] Get a logger instance.
+
+    This function is deprecated. Use logging.getLogger() directly or
+    import 'logger' from this module instead.
+
+    Args:
+        name: Logger name. If None, uses __name__.
+
+    Returns:
+        logging.Logger: Configured logger instance.
+    """
+    import warnings
+    warnings.warn(
+        "get_logger() is deprecated, use logging.getLogger() or import 'logger' from this module",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return logging.getLogger(name or __name__)

@@ -2,15 +2,20 @@
 Configuration management for Crypto Price Monitoring Bot
 """
 
-import os
 import math
+import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 
-def _safe_int_env(name: str, default: int, min_val: int = 0, max_val: int = 1_000_000_000) -> int:
+def _safe_int_env(
+    name: str,
+    default: int,
+    min_val: int = 0,
+    max_val: int = 1_000_000_000,
+) -> int:
     """Safely read integer environment variable with bounds."""
     raw = os.getenv(name, str(default))
     try:
@@ -22,7 +27,12 @@ def _safe_int_env(name: str, default: int, min_val: int = 0, max_val: int = 1_00
     return value
 
 
-def _safe_float_env(name: str, default: float, min_val: float = 0.0, max_val: float = 1_000_000_000.0) -> float:
+def _safe_float_env(
+    name: str,
+    default: float,
+    min_val: float = 0.0,
+    max_val: float = 1_000_000_000.0,
+) -> float:
     """Safely read float environment variable with bounds."""
     raw = os.getenv(name, str(default))
     try:
@@ -34,6 +44,40 @@ def _safe_float_env(name: str, default: float, min_val: float = 0.0, max_val: fl
     if value < min_val or value > max_val:
         return default
     return value
+
+
+def _safe_int(
+    value: str,
+    default: int,
+    min_val: int = 0,
+    max_val: int = 1_000_000_000,
+) -> int:
+    """Safely parse integer string with bounds."""
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    if result < min_val or result > max_val:
+        return default
+    return result
+
+
+def _safe_float(
+    value: str,
+    default: float,
+    min_val: float = 0.0,
+    max_val: float = 1_000_000_000.0,
+) -> float:
+    """Safely parse float string with bounds."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(result):
+        return default
+    if result < min_val or result > max_val:
+        return default
+    return result
 
 
 @dataclass
@@ -49,33 +93,15 @@ class CoinConfig:
 
     @classmethod
     def from_env(cls, coin_name: str) -> 'CoinConfig':
-        """Create CoinConfig from environment variables with validation"""
-        def safe_float(value: str, default: float, min_val: float = 0, max_val: float = 1e9) -> float:
-            try:
-                result = float(value)
-                if not (min_val <= result <= max_val):
-                    return default
-                return result
-            except (ValueError, TypeError):
-                return default
-
-        def safe_int(value: str, default: int, min_val: int = 0, max_val: int = 1e9) -> int:
-            try:
-                result = int(value)
-                if not (min_val <= result <= max_val):
-                    return default
-                return result
-            except (ValueError, TypeError):
-                return default
-
+        """Create CoinConfig from environment variables with validation."""
         threshold_str = os.getenv(f"{coin_name}_INTEGER_THRESHOLD", "1000")
-        threshold = safe_float(threshold_str, 1000.0, 0.0001, 1e9)
+        threshold = _safe_float(threshold_str, 1000.0, 0.0001, 1e9)
 
         volatility_str = os.getenv(f"{coin_name}_VOLATILITY_PERCENT", "3.0")
-        volatility = safe_float(volatility_str, 3.0, 0.0, 1000.0)
+        volatility = _safe_float(volatility_str, 3.0, 0.0, 1000.0)
 
         window_str = os.getenv(f"{coin_name}_VOLATILITY_WINDOW_SECONDS", "60")
-        window = safe_int(window_str, 60, 1, 86400)
+        window = _safe_int(window_str, 60, 1, 86400)
 
         return cls(
             coin_name=coin_name,
@@ -84,13 +110,13 @@ class CoinConfig:
             integer_threshold=threshold,
             volatility_percent=volatility,
             volatility_window=window,
-            volume_alert_multiplier=safe_float(
+            volume_alert_multiplier=_safe_float(
                 os.getenv(f"{coin_name}_VOLUME_ALERT_MULTIPLIER", "10.0"),
                 10.0, 1.0, 10000.0
             )
         )
 
-    def __str__(self):
+    def __str__(self) -> str:
         threshold_str = f"{int(self.integer_threshold):,}" if self.integer_threshold >= 1 else f"{self.integer_threshold}"
         return (
             f"{self.coin_name}: enabled={self.enabled}, symbol={self.symbol}, "
@@ -101,11 +127,11 @@ class CoinConfig:
 
 
 class ConfigManager:
-    """Centralized configuration management"""
-    def __init__(self):
+    """Centralized configuration management."""
+
+    def __init__(self) -> None:
         # Load environment variables from .env file if it exists
         # (only if not already set in environment)
-        from pathlib import Path
         env_path = Path(__file__).parent.parent / '.env'
         if env_path.exists():
             load_dotenv(dotenv_path=env_path, override=False)
@@ -132,19 +158,18 @@ class ConfigManager:
         self.coin_names = [coin.strip() for coin in coin_list.split(",") if coin.strip()]
 
         # Load all coin configurations
-        self.coins: Dict[str, CoinConfig] = {}
+        self.coins: dict[str, CoinConfig] = {}
         self._load_coins()
 
-    def _load_coins(self):
-        """Load configurations for all coins"""
+    def _load_coins(self) -> None:
+        """Load configurations for all coins."""
         for coin_name in self.coin_names:
-            config = CoinConfig.from_env(coin_name)
-            self.coins[coin_name] = config
+            self.coins[coin_name] = CoinConfig.from_env(coin_name)
 
-    def get_enabled_coins(self) -> List[CoinConfig]:
-        """Get list of enabled coin configurations"""
+    def get_enabled_coins(self) -> list[CoinConfig]:
+        """Get list of enabled coin configurations."""
         return [config for config in self.coins.values() if config.enabled]
 
-    def get_coin_config(self, coin_name: str) -> Optional[CoinConfig]:
-        """Get configuration for specific coin"""
+    def get_coin_config(self, coin_name: str) -> CoinConfig | None:
+        """Get configuration for specific coin."""
         return self.coins.get(coin_name)

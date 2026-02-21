@@ -9,14 +9,13 @@ Usage:
     python monitor.py --status     # Show current status
 """
 
-import sys
 import asyncio
-import signal
 import math
 import os
-from datetime import datetime, timedelta
+import signal
+import sys
 from collections import deque
-from typing import Optional, List, Dict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from common import (
@@ -55,16 +54,16 @@ class PriceMonitor:
         # WebSocket updates ~20 times per second, keep 2x buffer
         max_price_history = max(int(config.volatility_window * 20 * 2), 100)
         self.price_history: deque[PriceData] = deque(maxlen=max_price_history)
-        self.last_price = None
-        self.last_processed_price = None  # Last price that triggered alerts
+        self.last_price: float | None = None
+        self.last_processed_price: float | None = None  # Last price that triggered alerts
 
         # Milestone notification cooldown tracking (global cooldown for any milestone crossing)
-        self.last_milestone_notification_time: Optional[datetime] = None
-        self.milestone_cooldown_seconds = milestone_alert_cooldown_seconds  # Configurable
+        self.last_milestone_notification_time: datetime | None = None
+        self.milestone_cooldown_seconds = milestone_alert_cooldown_seconds
 
         # Volatility notification cooldown tracking (independent from milestone cooldown)
-        self.last_volatility_notification_time: Optional[datetime] = None
-        self.volatility_cooldown_seconds = volatility_alert_cooldown_seconds  # Configurable
+        self.last_volatility_notification_time: datetime | None = None
+        self.volatility_cooldown_seconds = volatility_alert_cooldown_seconds
 
         # Volatility tracking - only alert when cumulative volatility is increasing
         self.last_cumulative_volatility: float = 0.0
@@ -73,9 +72,9 @@ class PriceMonitor:
         # Klines update once per minute, add buffer for window
         max_volume_history = max(config.volatility_window // 60 + 5, 10)
         self.volume_history: deque = deque(maxlen=max_volume_history)
-        self.last_volume_alert_time: Optional[datetime] = None
-        self.volume_alert_cooldown_seconds = volume_alert_cooldown_seconds  # Configurable cooldown
-        self.latest_volume_info: Optional[str] = None  # Store latest volume info for display
+        self.last_volume_alert_time: datetime | None = None
+        self.volume_alert_cooldown_seconds = volume_alert_cooldown_seconds
+        self.latest_volume_info: str | None = None  # Store latest volume info for display
         self._notification_tasks: set[asyncio.Task] = set()
 
     # Constants for volume monitoring
@@ -83,7 +82,7 @@ class PriceMonitor:
     MIN_VOLUME_VALUE = 0.0001  # Minimum valid volume value to prevent zero/negative issues
 
     def _calculate_milestone(self, price: float, threshold: float) -> float:
-        """Calculate the milestone for a given price and threshold"""
+        """Calculate the milestone for a given price and threshold."""
         if threshold <= 0:
             raise ValueError(f"Invalid threshold for {self.config.symbol}: {threshold}")
 
@@ -97,17 +96,21 @@ class PriceMonitor:
         epsilon = 1e-12
         return math.floor((price + epsilon) / threshold) * threshold
 
-    def _check_milestone_cooldown(self, coin: str) -> bool:
+    def _is_in_milestone_cooldown(self, coin: str) -> bool:
         """Check if milestone notification is in cooldown period.
+
         Returns True if in cooldown (should skip), False if not in cooldown.
         """
-        if self.last_milestone_notification_time:
-            now = now_in_configured_timezone()
-            time_since_last = (now - self.last_milestone_notification_time).total_seconds()
-            if time_since_last < self.milestone_cooldown_seconds:
-                logger.debug(f"[{coin}] Global cooldown active ({time_since_last:.0f}s ago)")
-                return True
-        return False
+        if not self.last_milestone_notification_time:
+            return False
+
+        now = now_in_configured_timezone()
+        time_since_last = (now - self.last_milestone_notification_time).total_seconds()
+        if time_since_last >= self.milestone_cooldown_seconds:
+            return False
+
+        logger.debug(f"[{coin}] Global cooldown active ({time_since_last:.0f}s ago)")
+        return True
 
     def _on_notification_done(self, task: asyncio.Task) -> None:
         """Cleanup completed async notification task and log errors."""
@@ -118,12 +121,7 @@ class PriceMonitor:
             logger.exception(f"[{self.config.symbol}] Failed to send Telegram notification")
 
     def _send_notification(self, message: str) -> None:
-        """
-        Send notification without blocking the event loop.
-
-        - In async context: offload blocking requests call to a worker thread.
-        - In sync context (tests/CLI): send directly.
-        """
+        """Send notification without blocking the event loop."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -184,7 +182,7 @@ class PriceMonitor:
         # Check if milestone was crossed
         if last_milestone != current_milestone:
             # Check cooldown - skip if in cooldown period
-            if self._check_milestone_cooldown(coin):
+            if self._is_in_milestone_cooldown(coin):
                 self.last_price = current_price
                 return False
 
@@ -312,7 +310,7 @@ class PriceMonitor:
         # Update last notification time
         self.last_volatility_notification_time = current_time
 
-    def check_volatility(self, current_price: float) -> Optional[str]:
+    def check_volatility(self, current_price: float) -> str | None:
         """
         Enhanced volatility check using multiple metrics:
         1. Standard deviation (measures price dispersion)
@@ -352,7 +350,7 @@ class PriceMonitor:
 
         return volatility_info
 
-    def check_volume_anomaly(self, current_price: float, volume: float) -> Optional[str]:
+    def check_volume_anomaly(self, current_price: float, volume: float) -> str | None:
         """
         Check for volume anomalies (sudden spikes in trading volume)
 
@@ -447,7 +445,7 @@ class PriceMonitor:
 
         return f"V:{volume_multiplier:.1f}x"
 
-    def check(self, current_price: float) -> Optional[str]:
+    def check(self, current_price: float) -> str | None:
         """
         Check price and return formatted output
 
@@ -502,27 +500,27 @@ class WebSocketMultiCoinMonitor:
         self.notifier = TelegramNotifier()
 
         # Load configurations for all enabled coins
-        self.monitors: Dict[str, PriceMonitor] = {}
+        self.monitors: dict[str, PriceMonitor] = {}
         self._load_monitors()
 
         # WebSocket client
-        self.ws_client: Optional[BinanceWebSocketClient] = None
+        self.ws_client: BinanceWebSocketClient | None = None
 
         # Display statistics
-        self.last_print_time = None
+        self.last_print_time: datetime | None = None
         self.print_interval = 5  # Print status every 5 seconds
-        self._pending_updates: List[str] = []
+        self._pending_updates: list[str] = []
         self._update_lock = asyncio.Lock()  # Lock for thread-safe updates
 
         # Shutdown handling
         self._shutdown_event = asyncio.Event()
         self._setup_signal_handlers()
-        self._disconnect_alert_time: Optional[datetime] = None
-        self._last_disconnect_reason: Optional[str] = None
+        self._disconnect_alert_time: datetime | None = None
+        self._last_disconnect_reason: str | None = None
 
         # Heartbeat file: touched when fresh market updates are processed.
         self._heartbeat_file = Path(os.getenv("MONITOR_HEARTBEAT_FILE", "/tmp/monitor_heartbeat"))
-        self._last_heartbeat_touch: Optional[datetime] = None
+        self._last_heartbeat_touch: datetime | None = None
 
     def _load_monitors(self):
         """Load monitors from configuration"""
@@ -549,40 +547,48 @@ class WebSocketMultiCoinMonitor:
 
         logger.debug("Signal handlers registered for SIGINT and SIGTERM")
 
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals (SIGINT, SIGTERM)"""
+    def _signal_handler(self, signum: int, frame) -> None:
+        """Handle shutdown signals (SIGINT, SIGTERM)."""
         sig_name = signal.Signals(signum).name
         logger.info(f"收到信号 {sig_name} ({signum})，开始优雅关闭...")
 
         # Restore original signal handler FIRST to prevent race condition
         # This ensures a second signal triggers immediate termination
-        from common import _restore_signal_handler
         original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
-        _restore_signal_handler(signum, original_handler)
+        self._restore_signal_handler(signum, original_handler)
 
         # Set the shutdown event to stop the WebSocket
         self._shutdown_event.set()
 
-    async def _send_shutdown_notification(self):
-        """Send shutdown notification via Telegram"""
+    @staticmethod
+    def _restore_signal_handler(signum: int, original_handler) -> None:
+        """Restore original signal handler, handling cross-platform differences."""
         try:
-            now = now_in_configured_timezone()
-            uptime = "未知"
+            signal.signal(signum, original_handler)
+        except (ValueError, OSError):
+            # Signal might not be available on this platform (e.g., Windows)
+            pass
 
-            if self.ws_client:
-                stats = self.ws_client.get_statistics()
-                uptime_seconds = stats.get('uptime_seconds', 0)
-                hours = int(uptime_seconds // 3600)
-                minutes = int((uptime_seconds % 3600) // 60)
-                uptime = f"{hours}h {minutes}m"
+    async def _send_shutdown_notification(self) -> None:
+        """Send shutdown notification via Telegram."""
+        now = now_in_configured_timezone()
+        uptime = "未知"
 
-            message = (
-                f"👋 <b>加密货币价格监控已停止</b>\n"
-                f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"⌛ 运行时间: {uptime}\n"
-                f"🪙 监控币种: {len(self.monitors)} 个\n"
-                f"📊 状态: 优雅关闭"
-            )
+        if self.ws_client:
+            stats = self.ws_client.get_statistics()
+            uptime_seconds = stats.get('uptime_seconds', 0)
+            hours = int(uptime_seconds // 3600)
+            minutes = int((uptime_seconds % 3600) // 60)
+            uptime = f"{hours}h {minutes}m"
+
+        message = (
+            f"👋 <b>加密货币价格监控已停止</b>\n"
+            f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"⌛ 运行时间: {uptime}\n"
+            f"🪙 监控币种: {len(self.monitors)} 个\n"
+            f"📊 状态: 优雅关闭"
+        )
+        try:
             self.notifier.send_message(message)
         except Exception as e:
             logger.error(f"发送关闭通知失败: {e}")
@@ -662,14 +668,10 @@ class WebSocketMultiCoinMonitor:
         except OSError as e:
             logger.warning(f"更新心跳文件失败 '{self._heartbeat_file}': {e}")
 
-    async def _on_disconnect(self, reason: str):
-        """Handle WebSocket disconnect event"""
+    async def _on_disconnect(self, reason: str) -> None:
+        """Handle WebSocket disconnect event."""
         self._last_disconnect_reason = reason
         self._disconnect_alert_time = now_in_configured_timezone()
-
-        # Get first enabled coin name for logging context
-        enabled_coins = self.config.get_enabled_coins()
-        coin = enabled_coins[0].coin_name if enabled_coins else "System"
 
         message = (
             f"🚨🚨【连接断开警报】🚨🚨\n"
@@ -686,30 +688,45 @@ class WebSocketMultiCoinMonitor:
         try:
             loop = asyncio.get_running_loop()
             task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
-            def on_done(t):
-                if t.cancelled():
-                    return
-                err = t.exception()
-                if err:
-                    logger.error(f"断开告警发送失败: {err}")
-                else:
-                    logger.info(f"断开告警已发送: {t.result()}")
-            task.add_done_callback(on_done)
+            task.add_done_callback(self._on_disconnect_done)
         except Exception as e:
             logger.error(f"发送断开告警失败: {e}")
 
-    async def _on_reconnect(self, attempt_count: int):
-        """Handle WebSocket reconnect success"""
+    def _on_disconnect_done(self, task: asyncio.Task) -> None:
+        """Handle disconnect notification completion."""
+        if task.cancelled():
+            return
+        err = task.exception()
+        if err:
+            logger.error(f"断开告警发送失败: {err}")
+        else:
+            logger.info(f"断开告警已发送: {task.result()}")
+
+    def _format_downtime(self, seconds: float) -> str:
+        """Format downtime duration for display."""
+        if seconds < 60:
+            return f"{int(seconds)}秒"
+        if seconds < 3600:
+            return f"{int(seconds // 60)}分{int(seconds % 60)}秒"
+        return f"{int(seconds // 3600)}小时{int((seconds % 3600) // 60)}分"
+
+    def _on_reconnect_done(self, task: asyncio.Task) -> None:
+        """Handle reconnect notification completion."""
+        if task.cancelled():
+            return
+        err = task.exception()
+        if err:
+            logger.error(f"重连告警发送失败: {err}")
+        else:
+            logger.info(f"重连告警已发送: {task.result()}")
+
+    async def _on_reconnect(self, attempt_count: int) -> None:
+        """Handle WebSocket reconnect success."""
         now = now_in_configured_timezone()
         downtime = ""
         if self._disconnect_alert_time:
             downtime_seconds = (now - self._disconnect_alert_time).total_seconds()
-            if downtime_seconds < 60:
-                downtime = f"{int(downtime_seconds)}秒"
-            elif downtime_seconds < 3600:
-                downtime = f"{int(downtime_seconds // 60)}分{int(downtime_seconds % 60)}秒"
-            else:
-                downtime = f"{int(downtime_seconds // 3600)}小时{int((downtime_seconds % 3600) // 60)}分"
+            downtime = self._format_downtime(downtime_seconds)
 
         message = (
             f"✅✅【连接恢复通知】✅✅\n"
@@ -724,15 +741,7 @@ class WebSocketMultiCoinMonitor:
         try:
             loop = asyncio.get_running_loop()
             task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
-            def on_done(t):
-                if t.cancelled():
-                    return
-                err = t.exception()
-                if err:
-                    logger.error(f"重连告警发送失败: {err}")
-                else:
-                    logger.info(f"重连告警已发送: {t.result()}")
-            task.add_done_callback(on_done)
+            task.add_done_callback(self._on_reconnect_done)
             self._disconnect_alert_time = None
             self._last_disconnect_reason = None
         except Exception as e:
@@ -813,10 +822,11 @@ class WebSocketMultiCoinMonitor:
 
         except KeyboardInterrupt:
             logger.info("\n正在停止 WebSocket 监控 (键盘中断)...")
-            await self.ws_client.stop()
+            if self.ws_client:
+                await self.ws_client.stop()
             self.notifier.send_message("👋 加密货币价格监控已停止")
-        except Exception as e:
-            logger.error(f"WebSocket 监控出现意外错误: {e}")
+        except Exception:
+            logger.exception("WebSocket 监控出现意外错误")
             if self.ws_client:
                 await self.ws_client.stop()
             raise
