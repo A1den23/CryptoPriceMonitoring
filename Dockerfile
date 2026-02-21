@@ -39,7 +39,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # Copy application code
-COPY common.py .
+COPY common/ ./common/
 COPY monitor.py .
 COPY bot.py .
 

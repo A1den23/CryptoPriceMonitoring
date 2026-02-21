@@ -1,0 +1,123 @@
+"""
+Configuration management for Crypto Price Monitoring Bot
+"""
+
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from dotenv import load_dotenv
+
+
+@dataclass
+class CoinConfig:
+    """Configuration for a single coin"""
+    coin_name: str
+    enabled: bool
+    symbol: str
+    integer_threshold: float
+    volatility_percent: float
+    volatility_window: int
+    volume_alert_multiplier: float = 10.0  # Volume anomaly threshold (10x = 1000% increase)
+
+    @classmethod
+    def from_env(cls, coin_name: str) -> 'CoinConfig':
+        """Create CoinConfig from environment variables with validation"""
+        def safe_float(value: str, default: float, min_val: float = 0, max_val: float = 1e9) -> float:
+            try:
+                result = float(value)
+                if not (min_val <= result <= max_val):
+                    return default
+                return result
+            except (ValueError, TypeError):
+                return default
+
+        def safe_int(value: str, default: int, min_val: int = 0, max_val: int = 1e9) -> int:
+            try:
+                result = int(value)
+                if not (min_val <= result <= max_val):
+                    return default
+                return result
+            except (ValueError, TypeError):
+                return default
+
+        threshold_str = os.getenv(f"{coin_name}_INTEGER_THRESHOLD", "1000")
+        threshold = safe_float(threshold_str, 1000.0, 0.0001, 1e9)
+
+        volatility_str = os.getenv(f"{coin_name}_VOLATILITY_PERCENT", "3.0")
+        volatility = safe_float(volatility_str, 3.0, 0.0, 1000.0)
+
+        window_str = os.getenv(f"{coin_name}_VOLATILITY_WINDOW_SECONDS", "60")
+        window = safe_int(window_str, 60, 1, 86400)
+
+        return cls(
+            coin_name=coin_name,
+            enabled=os.getenv(f"{coin_name}_ENABLED", "false").lower() == "true",
+            symbol=os.getenv(f"{coin_name}_SYMBOL", f"{coin_name}USDT"),
+            integer_threshold=threshold,
+            volatility_percent=volatility,
+            volatility_window=window,
+            volume_alert_multiplier=safe_float(
+                os.getenv(f"{coin_name}_VOLUME_ALERT_MULTIPLIER", "10.0"),
+                10.0, 1.0, 10000.0
+            )
+        )
+
+    def __str__(self):
+        threshold_str = f"{int(self.integer_threshold):,}" if self.integer_threshold >= 1 else f"{self.integer_threshold}"
+        return (
+            f"{self.coin_name}: enabled={self.enabled}, symbol={self.symbol}, "
+            f"integer_threshold={threshold_str}, "
+            f"volatility={self.volatility_percent}%/{self.volatility_window}s, "
+            f"volume_alert={self.volume_alert_multiplier}x"
+        )
+
+
+class ConfigManager:
+    """Centralized configuration management"""
+    def __init__(self):
+        # Load environment variables from .env file if it exists
+        # (only if not already set in environment)
+        from pathlib import Path
+        env_path = Path(__file__).parent.parent / '.env'
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+
+        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # Note: CHECK_INTERVAL_SECONDS is kept for backwards compatibility but not used
+        # (WebSocket mode provides real-time updates without polling)
+        self.check_interval = int(os.getenv("CHECK_INTERVAL_SECONDS", "5"))
+        self.debug_mode = os.getenv("DEBUG", "false").lower() == "true"
+        # Volume alert cooldown (global default, can be overridden per coin in the future)
+        self.volume_alert_cooldown_seconds = int(os.getenv("VOLUME_ALERT_COOLDOWN_SECONDS", "5"))
+        # Volatility alert cooldown (time between volatility notifications)
+        self.volatility_alert_cooldown_seconds = int(os.getenv("VOLATILITY_ALERT_COOLDOWN_SECONDS", "60"))
+        # Milestone alert cooldown (global cooldown for any milestone crossing)
+        self.milestone_alert_cooldown_seconds = int(os.getenv("MILESTONE_ALERT_COOLDOWN_SECONDS", "600"))
+        # WebSocket keepalive and stale-connection detection
+        self.ws_ping_interval_seconds = float(os.getenv("WS_PING_INTERVAL_SECONDS", "30"))
+        self.ws_pong_timeout_seconds = float(os.getenv("WS_PONG_TIMEOUT_SECONDS", "10"))
+        self.ws_message_timeout_seconds = float(os.getenv("WS_MESSAGE_TIMEOUT_SECONDS", "120"))
+
+        # Get coin list from env or use default
+        coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")
+        self.coin_names = [coin.strip() for coin in coin_list.split(",") if coin.strip()]
+
+        # Load all coin configurations
+        self.coins: Dict[str, CoinConfig] = {}
+        self._load_coins()
+
+    def _load_coins(self):
+        """Load configurations for all coins"""
+        for coin_name in self.coin_names:
+            config = CoinConfig.from_env(coin_name)
+            self.coins[coin_name] = config
+
+    def get_enabled_coins(self) -> List[CoinConfig]:
+        """Get list of enabled coin configurations"""
+        return [config for config in self.coins.values() if config.enabled]
+
+    def get_coin_config(self, coin_name: str) -> Optional[CoinConfig]:
+        """Get configuration for specific coin"""
+        return self.coins.get(coin_name)

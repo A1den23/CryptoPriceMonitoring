@@ -76,12 +76,19 @@ docker compose down
 
 ### 全局配置
 
-- `DEBUG`：是否开启调试
-- `LOG_LEVEL`：日志级别（`DEBUG/INFO/WARNING/ERROR`）
-- `COIN_LIST`：逗号分隔的币种名，如 `BTC,ETH,SOL,USD1`
-- `MILESTONE_ALERT_COOLDOWN_SECONDS`：里程碑告警冷却（默认 600）
-- `VOLATILITY_ALERT_COOLDOWN_SECONDS`：波动告警冷却（默认 60）
-- `VOLUME_ALERT_COOLDOWN_SECONDS`：成交量告警冷却（默认 5）
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `DEBUG` | 是否开启调试 | `false` |
+| `LOG_LEVEL` | 日志级别（`DEBUG/INFO/WARNING/ERROR`） | `INFO` |
+| `TIMEZONE` | 时区（如 `Asia/Shanghai`, `UTC`, `America/New_York`） | `Asia/Shanghai` |
+| `COIN_LIST` | 逗号分隔的币种名 | `BTC,ETH,SOL,USD1` |
+| `MILESTONE_ALERT_COOLDOWN_SECONDS` | 里程碑告警冷却（秒） | 600 |
+| `VOLATILITY_ALERT_COOLDOWN_SECONDS` | 波动告警冷却（秒） | 60 |
+| `VOLUME_ALERT_COOLDOWN_SECONDS` | 成交量告警冷却（秒） | 5 |
+| `WS_PING_INTERVAL_SECONDS` | WebSocket 心跳间隔 | 30 |
+| `WS_PONG_TIMEOUT_SECONDS` | WebSocket 心跳超时 | 10 |
+| `WS_MESSAGE_TIMEOUT_SECONDS` | WebSocket 消息超时（无数据断开） | 120 |
+| `BOT_HEARTBEAT_INTERVAL_SECONDS` | Bot 心跳文件更新间隔 | 30 |
 
 ### 每个币种配置
 
@@ -178,12 +185,39 @@ docker compose exec crypto-bot bash
 - 确认改的是 `.env` 不是 `.env.example`
 - 重启服务使配置生效
 
-## 项目结构
+### 时间显示不正确
 
-- `common.py`：配置、API 客户端、WebSocket 客户端、通知器
-- `monitor.py`：实时监控与告警逻辑
-- `bot.py`：Telegram 交互式 Bot
-- `docker-compose.yml`：容器编排
+- 检查 `TIMEZONE` 配置，支持常见时区如 `Asia/Shanghai`, `UTC`, `America/New_York`, `Europe/London`
+- 修改后需重启服务
+
+## 最近更新
+
+### v2.0 (2025-02)
+
+- **模块重构**：`common.py` 拆分为 `common/` 包，职责更清晰
+- **时区配置**：新增 `TIMEZONE` 环境变量，支持自定义时区
+- **WebSocket 优化**：可配置心跳间隔、超时时间
+- **Bot 增强**：添加心跳机制，支持模糊匹配命令
+- **安全修复**：路径遍历防护、输入验证增强
+- **信号处理**：修复信号竞争条件，支持优雅停机
+
+```
+.
+├── common/                      # 共享模块包
+│   ├── __init__.py             # 导出公共 API
+│   ├── config.py               # 配置管理 (ConfigManager, CoinConfig)
+│   ├── logging.py              # 日志工具
+│   ├── utils.py                # 工具函数 (时区、价格格式化、币符号)
+│   ├── notifications.py        # Telegram 通知器
+│   └── clients/
+│       ├── http.py             # HTTP API 客户端
+│       └── websocket.py        # WebSocket 客户端
+├── monitor.py                   # 实时监控与告警逻辑
+├── bot.py                       # Telegram 交互式 Bot
+├── docker-compose.yml           # 容器编排
+├── Dockerfile                   # 镜像构建
+└── requirements.txt             # Python 依赖
+```
 
 ## License
 

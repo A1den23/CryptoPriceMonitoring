@@ -28,11 +28,7 @@ wheels/
 
 # Python virtual env
 .venv/
-venv/
 .env/
-__pycache__/
-*.pyc
-.env
 
 # Logs
 *.log
@@ -53,9 +49,27 @@ Thumbs.db
 # claude
 .claude
 
-# Test reports (temporary files)
-TEST_REPORT.md
-DOCKER_TEST_REPORT.md
-test_code.py
-*_TEST_REPORT.md
-test_*.py
+# Test coverage and cache
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.tox/
+.nox/
+
+# Docker
+.dockerignore
+
+# Data files
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.pid
+*.sock
+tmp/
+temp/
+
+# Jupyter Notebook
+.ipynb_checkpoints/

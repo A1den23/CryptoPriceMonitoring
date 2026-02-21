@@ -54,11 +54,31 @@ cp .env.example .env
 nano .env
 ```
 
-最少需要：
+**最少需要**：
 
 ```env
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+```
+
+**推荐配置**：
+
+```env
+# 时区设置
+TIMEZONE=Asia/Shanghai
+
+# WebSocket 连接优化
+WS_PING_INTERVAL_SECONDS=30
+WS_PONG_TIMEOUT_SECONDS=10
+WS_MESSAGE_TIMEOUT_SECONDS=120
+
+# Bot 健康检查
+BOT_HEARTBEAT_INTERVAL_SECONDS=30
+
+# 告警冷却时间（秒）
+MILESTONE_ALERT_COOLDOWN_SECONDS=600
+VOLATILITY_ALERT_COOLDOWN_SECONDS=60
+VOLUME_ALERT_COOLDOWN_SECONDS=5
 ```
 
 ### 2.3 启动服务
@@ -170,6 +190,26 @@ docker compose logs --tail=200 crypto-bot
 docker compose up -d
 # 必要时强制重建
 docker compose up -d --build
+```
+
+### 日志时间不正确
+
+检查并设置正确的时区：
+
+```bash
+# 查看当前时区配置
+grep TIMEZONE .env
+
+# 修改为正确的时区
+# 亚洲/上海：Asia/Shanghai
+#  UTC：UTC
+# 纽约：America/New_York
+```
+
+修改后重启服务：
+
+```bash
+docker compose restart
 ```
 
 ## 7. 生产建议（简版）

@@ -51,7 +51,10 @@ class PriceMonitor:
         self.notifier = notifier
 
         # State tracking
-        self.price_history: deque[PriceData] = deque()
+        # Calculate max history size based on window and expected update frequency
+        # WebSocket updates ~20 times per second, keep 2x buffer
+        max_price_history = max(int(config.volatility_window * 20 * 2), 100)
+        self.price_history: deque[PriceData] = deque(maxlen=max_price_history)
         self.last_price = None
         self.last_processed_price = None  # Last price that triggered alerts
 
@@ -67,7 +70,9 @@ class PriceMonitor:
         self.last_cumulative_volatility: float = 0.0
 
         # Volume anomaly monitoring
-        self.volume_history: deque = deque()
+        # Klines update once per minute, add buffer for window
+        max_volume_history = max(config.volatility_window // 60 + 5, 10)
+        self.volume_history: deque = deque(maxlen=max_volume_history)
         self.last_volume_alert_time: Optional[datetime] = None
         self.volume_alert_cooldown_seconds = volume_alert_cooldown_seconds  # Configurable cooldown
         self.latest_volume_info: Optional[str] = None  # Store latest volume info for display
@@ -146,7 +151,7 @@ class PriceMonitor:
             f"🪙 {self.config.symbol}\n"
             f"💰 价格: {format_price(current_price)}\n"
             f"{direction} 突破方向: {direction_text}\n"
-            f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}"
         )
         self._send_notification(message)
 
@@ -155,7 +160,7 @@ class PriceMonitor:
             milestone_str = f"${current_milestone:,}"
         else:
             milestone_str = format_price(current_milestone)
-        logger.info(f"[{coin}] Crossed milestone: {milestone_str}")
+        logger.info(f"[{coin}] 突破里程碑: {milestone_str}")
 
     def check_integer_milestone(self, current_price: float) -> bool:
         """Check if price reached an integer milestone using crossing detection"""
@@ -191,6 +196,122 @@ class PriceMonitor:
         self.last_price = current_price
         return False
 
+    def _update_price_history(self, current_price: float) -> list:
+        """Update price history and return list of prices"""
+        current_time = datetime.now(UTC8)
+        self.price_history.append(PriceData(current_price, current_time))
+
+        # Remove old data outside the time window (sliding window)
+        cutoff_time = current_time - timedelta(seconds=self.config.volatility_window)
+        while self.price_history and self.price_history[0].timestamp < cutoff_time:
+            self.price_history.popleft()
+
+        return [p.price for p in self.price_history]
+
+    def _calculate_std_dev_metric(self, prices: list) -> float:
+        """Calculate standard deviation percentage"""
+        mean_price = sum(prices) / len(prices)
+        variance = sum((p - mean_price) ** 2 for p in prices) / len(prices)
+        std_dev = variance ** 0.5
+        return (std_dev / mean_price) * 100 if mean_price > 0 else 0
+
+    def _calculate_cumulative_metric(self, prices: list) -> float:
+        """Calculate cumulative volatility percentage"""
+        if len(prices) < 2:
+            return 0.0
+        cumulative_change = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices)))
+        return (cumulative_change / prices[0]) * 100 if prices[0] > 0 else 0
+
+    def _calculate_range_metric(self, prices: list) -> float:
+        """Calculate min/max range volatility percentage"""
+        min_price = min(prices)
+        max_price = max(prices)
+        return ((max_price - min_price) / min_price) * 100 if min_price > 0 else 0
+
+    def _calculate_acceleration_metric(self, prices: list) -> float:
+        """Calculate volatility acceleration"""
+        if len(prices) < 4:
+            return 1
+        recent_prices = prices[-4:]
+        recent_changes = [
+            abs(recent_prices[i] - recent_prices[i - 1])
+            for i in range(1, len(recent_prices))
+        ]
+        avg_change = (sum(recent_changes) / len(recent_changes)) if recent_changes else 0
+        return (max(recent_changes) / avg_change) if avg_change > 0 else 1
+
+    def _evaluate_volatility_thresholds(self, metrics: dict, threshold: float) -> tuple:
+        """
+        Evaluate if volatility exceeds thresholds
+        Returns: (is_volatile, reasons)
+        """
+        std_dev_pct = metrics['std_dev_pct']
+        cumulative_volatility_pct = metrics['cumulative_volatility_pct']
+        range_volatility_pct = metrics['range_volatility_pct']
+        acceleration = metrics['acceleration']
+
+        # Cumulative volatility alert logic: dynamic tracking
+        cumulative_alert = False
+        if cumulative_volatility_pct >= threshold:
+            if cumulative_volatility_pct > self.last_cumulative_volatility:
+                cumulative_alert = True
+
+        # Always update the tracking value
+        self.last_cumulative_volatility = cumulative_volatility_pct
+
+        is_volatile = (
+            std_dev_pct >= threshold * 0.7 or
+            cumulative_alert or
+            range_volatility_pct >= threshold or
+            (acceleration >= 2.0 and std_dev_pct >= threshold * 0.3)
+        )
+
+        # Collect reasons for alert
+        reasons = []
+        if is_volatile:
+            if std_dev_pct >= threshold * 0.7:
+                reasons.append(f"标准差: {std_dev_pct:.2f}%")
+            if cumulative_alert:
+                reasons.append(f"累计波动: {cumulative_volatility_pct:.2f}%")
+            if range_volatility_pct >= threshold:
+                reasons.append(f"区间波动: {range_volatility_pct:.2f}%")
+            if acceleration >= 2.0 and std_dev_pct >= threshold * 0.3:
+                reasons.append(f"加速度: {acceleration:.1f}x")
+
+        return is_volatile, reasons
+
+    def _is_in_volatility_cooldown(self, current_time: datetime) -> bool:
+        """Check if volatility notification is in cooldown period"""
+        if not self.last_volatility_notification_time:
+            return False
+        time_since_last = (current_time - self.last_volatility_notification_time).total_seconds()
+        return time_since_last < self.volatility_cooldown_seconds
+
+    def _send_volatility_alert(self, current_price: float, metrics: dict, reasons: list):
+        """Send volatility alert notification"""
+        current_time = datetime.now(UTC8)
+        change = current_price - self.price_history[0].price
+        change_percent = (change / self.price_history[0].price) * 100
+        direction = "📈" if change > 0 else "📉"
+        coin = get_coin_display_name(self.config.symbol)
+
+        message = (
+            f"⚠️⚠️【波动警报】⚠️⚠️\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"🪙 {self.config.symbol}\n"
+            f"💰 当前: {format_price(current_price)}\n"
+            f"📊 时间窗口: {self.config.volatility_window}s ({len(self.price_history)} pts)\n"
+            f"⚡️ 触发指标: {', '.join(reasons)}\n"
+            f"{direction} 净变化: {change_percent:+.2f}%\n"
+            f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"━━━━━━━━━━━━━━━━━"
+        )
+        self._send_notification(message)
+        logger.info(f"[{coin}] 高波动 - {', '.join(reasons)}")
+
+        # Update last notification time
+        self.last_volatility_notification_time = current_time
+
     def check_volatility(self, current_price: float) -> Optional[str]:
         """
         Enhanced volatility check using multiple metrics:
@@ -199,116 +320,35 @@ class PriceMonitor:
         3. Min/max range (original method)
         4. Volatility acceleration (rate of change)
         """
-        current_time = datetime.now(UTC8)
-
-        # Add current price to history
-        self.price_history.append(PriceData(current_price, current_time))
-
-        # Remove old data outside the time window (sliding window, no clearing)
-        cutoff_time = current_time - timedelta(seconds=self.config.volatility_window)
-        while self.price_history and self.price_history[0].timestamp < cutoff_time:
-            self.price_history.popleft()
+        # Update price history
+        prices = self._update_price_history(current_price)
 
         # Need at least 3 data points for meaningful statistics
-        if len(self.price_history) < 3:
+        if len(prices) < 3:
             return None
 
-        prices = [p.price for p in self.price_history]
+        # Calculate all metrics
+        metrics = {
+            'std_dev_pct': self._calculate_std_dev_metric(prices),
+            'cumulative_volatility_pct': self._calculate_cumulative_metric(prices),
+            'range_volatility_pct': self._calculate_range_metric(prices),
+            'acceleration': self._calculate_acceleration_metric(prices),
+        }
 
-        # Metric 1: Standard deviation (relative to mean price)
-        mean_price = sum(prices) / len(prices)
-        variance = sum((p - mean_price) ** 2 for p in prices) / len(prices)
-        std_dev = variance ** 0.5
-        std_dev_pct = (std_dev / mean_price) * 100 if mean_price > 0 else 0
+        # Format volatility info for display
+        volatility_info = f"σ:{metrics['std_dev_pct']:.2f}% Σ:{metrics['cumulative_volatility_pct']:.2f}% R:{metrics['range_volatility_pct']:.2f}%"
 
-        # Metric 2: Cumulative volatility (sum of absolute price changes)
-        if len(prices) >= 2:
-            cumulative_change = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices)))
-            cumulative_volatility_pct = (cumulative_change / prices[0]) * 100 if prices[0] > 0 else 0
-        else:
-            cumulative_volatility_pct = 0.0
-
-        # Metric 3: Min/max range (original method)
-        min_price = min(prices)
-        max_price = max(prices)
-        range_volatility_pct = ((max_price - min_price) / min_price) * 100 if min_price > 0 else 0
-
-        # Metric 4: Volatility acceleration (rate of change in recent movements)
-        if len(prices) >= 4:
-            recent_prices = prices[-4:]
-            recent_changes = [
-                abs(recent_prices[i] - recent_prices[i - 1])
-                for i in range(1, len(recent_prices))
-            ]
-            avg_change = (sum(recent_changes) / len(recent_changes)) if recent_changes else 0
-            acceleration = (max(recent_changes) / avg_change) if avg_change > 0 else 1
-        else:
-            acceleration = 1
-
-        # Determine if volatility is high - cumulative must be INCREASING to trigger
-        threshold = self.config.volatility_percent
-
-        # Cumulative volatility alert logic: dynamic tracking
-        # Check if current value exceeds threshold AND is increasing from last tracked value
-        cumulative_alert = False
-        if cumulative_volatility_pct >= threshold:
-            if cumulative_volatility_pct > self.last_cumulative_volatility:
-                cumulative_alert = True
-
-        # Always update the tracking value (enables dynamic tracking)
-        # This allows notifications when volatility drops then rises again
-        self.last_cumulative_volatility = cumulative_volatility_pct
-
-        is_volatile = (
-            std_dev_pct >= threshold * 0.7 or  # 70% of threshold for std dev
-            cumulative_alert or  # Only when cumulative is INCREASING
-            range_volatility_pct >= threshold or  # 100% for range
-            (acceleration >= 2.0 and std_dev_pct >= threshold * 0.3)  # High acceleration
-        )
-
-        # Create detailed volatility info for display
-        volatility_info = f"σ:{std_dev_pct:.2f}% Σ:{cumulative_volatility_pct:.2f}% R:{range_volatility_pct:.2f}%"
-
-        # Cooldown tracking: only alert if enough time passed since last alert
-        if self.last_volatility_notification_time:
-            time_since_last = (current_time - self.last_volatility_notification_time).total_seconds()
-            if time_since_last < self.volatility_cooldown_seconds:
-                return volatility_info
-
-        if is_volatile:
-            change = current_price - self.price_history[0].price
-            change_percent = (change / self.price_history[0].price) * 100
-            direction = "📈" if change > 0 else "📉"
-            coin = get_coin_display_name(self.config.symbol)
-
-            # Determine primary reason for alert
-            reasons = []
-            if std_dev_pct >= threshold * 0.7:
-                reasons.append(f"Std Dev: {std_dev_pct:.2f}%")
-            if cumulative_alert:
-                reasons.append(f"Cumulative: {cumulative_volatility_pct:.2f}%")
-            if range_volatility_pct >= threshold:
-                reasons.append(f"Range: {range_volatility_pct:.2f}%")
-            if acceleration >= 2.0 and std_dev_pct >= threshold * 0.3:
-                reasons.append(f"Acceleration: {acceleration:.1f}x")
-
-            message = (
-                f"⚠️⚠️【波动警报】⚠️⚠️\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🪙 {self.config.symbol}\n"
-                f"💰 当前: {format_price(current_price)}\n"
-                f"📊 时间窗口: {self.config.volatility_window}s ({len(self.price_history)} pts)\n"
-                f"⚡️ 触发指标: {', '.join(reasons)}\n"
-                f"{direction} 净变化: {change_percent:+.2f}%\n"
-                f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"━━━━━━━━━━━━━━━━━"
-            )
-            self._send_notification(message)
-            logger.info(f"[{coin}] High volatility - {', '.join(reasons)}")
-
-            # Update last notification time (but don't clear history - use sliding window)
-            self.last_volatility_notification_time = current_time
+        # Check cooldown
+        if self._is_in_volatility_cooldown(datetime.now(UTC8)):
             return volatility_info
+
+        # Evaluate thresholds
+        threshold = self.config.volatility_percent
+        is_volatile, reasons = self._evaluate_volatility_thresholds(metrics, threshold)
+
+        # Send alert if volatile
+        if is_volatile:
+            self._send_volatility_alert(current_price, metrics, reasons)
 
         return volatility_info
 
@@ -398,7 +438,7 @@ class PriceMonitor:
                 f"━━━━━━━━━━━━━━━━━"
             )
             self._send_notification(message)
-            logger.info(f"[{coin}] Volume anomaly detected: {volume_multiplier:.1f}x (curr:{current_volume:,.0f}, avg:{avg_volume:,.0f})")
+            logger.info(f"[{coin}] 成交量异常: {volume_multiplier:.1f}x (当前:{current_volume:,.0f}, 平均:{avg_volume:,.0f})")
 
             # Update last notification time
             self.last_volume_alert_time = current_time
@@ -496,10 +536,10 @@ class WebSocketMultiCoinMonitor:
                 milestone_alert_cooldown_seconds=self.config.milestone_alert_cooldown_seconds
             )
             self.monitors[coin_config.symbol] = monitor
-            logger.info(f"✓ Loaded {coin_config}")
+            logger.info(f"✓ 已加载 {coin_config}")
 
         if not self.monitors:
-            logger.warning("No coins enabled in configuration!")
+            logger.warning("配置中没有启用的币种！")
 
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown"""
@@ -512,20 +552,22 @@ class WebSocketMultiCoinMonitor:
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals (SIGINT, SIGTERM)"""
         sig_name = signal.Signals(signum).name
-        logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
+        logger.info(f"收到信号 {sig_name} ({signum})，开始优雅关闭...")
+
+        # Restore original signal handler FIRST to prevent race condition
+        # This ensures a second signal triggers immediate termination
+        from common import _restore_signal_handler
+        original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
+        _restore_signal_handler(signum, original_handler)
 
         # Set the shutdown event to stop the WebSocket
         self._shutdown_event.set()
-
-        # Restore original signal handler to allow immediate force-quit if needed
-        from common import _restore_signal_handler
-        _restore_signal_handler(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
 
     async def _send_shutdown_notification(self):
         """Send shutdown notification via Telegram"""
         try:
             now = datetime.now(UTC8)
-            uptime = "Unknown"
+            uptime = "未知"
 
             if self.ws_client:
                 stats = self.ws_client.get_statistics()
@@ -535,15 +577,15 @@ class WebSocketMultiCoinMonitor:
                 uptime = f"{hours}h {minutes}m"
 
             message = (
-                f"👋 <b>Crypto Price Monitoring Bot Stopped</b>\n"
+                f"👋 <b>加密货币价格监控已停止</b>\n"
                 f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"⌛ Uptime: {uptime}\n"
-                f"🪙 Monitored: {len(self.monitors)} coin(s)\n"
-                f"📊 Status: Graceful shutdown"
+                f"⌛ 运行时间: {uptime}\n"
+                f"🪙 监控币种: {len(self.monitors)} 个\n"
+                f"📊 状态: 优雅关闭"
             )
             self.notifier.send_message(message)
         except Exception as e:
-            logger.error(f"Failed to send shutdown notification: {e}")
+            logger.error(f"发送关闭通知失败: {e}")
 
     async def _on_price_update(self, symbol: str, price: float):
         """Callback function for WebSocket price updates"""
@@ -572,7 +614,7 @@ class WebSocketMultiCoinMonitor:
         """Callback function for WebSocket kline updates (volume monitoring)"""
         monitor = self.monitors.get(symbol)
         if not monitor:
-            logger.warning(f"No monitor found for symbol: {symbol}")
+            logger.warning(f"未找到交易对的监控器: {symbol}")
             return
 
         # Only check volume when kline is closed
@@ -593,12 +635,12 @@ class WebSocketMultiCoinMonitor:
             self._pending_updates.clear()
 
         timestamp = datetime.now(UTC8).strftime('%H:%M:%S')
-        logger.info(f"Real-time price updates [{timestamp}]:")
+        logger.info(f"实时价格更新 [{timestamp}]:")
         for update in updates_to_print:
             logger.info(f"  {update}")
 
         try:
-            print(f"[{timestamp}] Real-time updates:")
+            print(f"[{timestamp}] 实时更新:")
             for update in updates_to_print:
                 print(f"  {update}")
             print()
@@ -618,7 +660,7 @@ class WebSocketMultiCoinMonitor:
             self._heartbeat_file.touch()
             self._last_heartbeat_touch = now
         except OSError as e:
-            logger.warning(f"Failed to update monitor heartbeat file '{self._heartbeat_file}': {e}")
+            logger.warning(f"更新心跳文件失败 '{self._heartbeat_file}': {e}")
 
     async def _on_disconnect(self, reason: str):
         """Handle WebSocket disconnect event"""
@@ -649,12 +691,12 @@ class WebSocketMultiCoinMonitor:
                     return
                 err = t.exception()
                 if err:
-                    logger.error(f"Disconnect alert failed: {err}")
+                    logger.error(f"断开告警发送失败: {err}")
                 else:
-                    logger.info(f"Disconnect alert sent: {t.result()}")
+                    logger.info(f"断开告警已发送: {t.result()}")
             task.add_done_callback(on_done)
         except Exception as e:
-            logger.error(f"Failed to send disconnect alert: {e}")
+            logger.error(f"发送断开告警失败: {e}")
 
     async def _on_reconnect(self, attempt_count: int):
         """Handle WebSocket reconnect success"""
@@ -675,7 +717,7 @@ class WebSocketMultiCoinMonitor:
             f"📡 价格监控已恢复正常\n"
             f"🔄 重连次数: {attempt_count} 次\n"
             f"⏱️ 中断时长: {downtime if downtime else '未知'}\n"
-            f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"━━━━━━━━━━━━━━━━━"
         )
 
@@ -687,31 +729,31 @@ class WebSocketMultiCoinMonitor:
                     return
                 err = t.exception()
                 if err:
-                    logger.error(f"Reconnect alert failed: {err}")
+                    logger.error(f"重连告警发送失败: {err}")
                 else:
-                    logger.info(f"Reconnect alert sent: {t.result()}")
+                    logger.info(f"重连告警已发送: {t.result()}")
             task.add_done_callback(on_done)
             self._disconnect_alert_time = None
             self._last_disconnect_reason = None
         except Exception as e:
-            logger.error(f"Failed to send reconnect alert: {e}")
+            logger.error(f"发送重连告警失败: {e}")
 
     async def run(self):
         """Start WebSocket monitoring"""
         print(f"\n{'='*60}")
-        print(f"Starting Multi-Coin Price Monitor (WebSocket Mode)")
+        print(f"启动多币种价格监控 (WebSocket 模式)")
         print(f"{'='*60}")
-        print(f"Monitored coins: {len(self.monitors)}")
-        print(f"Connection: Real-time WebSocket (10-50ms latency)")
+        print(f"监控币种: {len(self.monitors)} 个")
+        print(f"连接方式: WebSocket 实时推送")
         print(f"{'='*60}\n")
 
         if not self.monitors:
-            logger.error("No enabled coins configured. Set *_ENABLED=true for at least one coin.")
+            logger.error("没有配置启用的币种。请至少设置一个 *_ENABLED=true")
             return
 
         # Test Telegram connection
         if not self.notifier.test_connection():
-            logger.warning("Failed to send test message. Check your Telegram configuration.")
+            logger.warning("测试消息发送失败。请检查 Telegram 配置。")
 
         # Get list of symbols to monitor
         symbols = list(self.monitors.keys())
@@ -752,16 +794,16 @@ class WebSocketMultiCoinMonitor:
 
             # If shutdown was triggered, handle graceful shutdown
             if self._shutdown_event.is_set():
-                logger.info("Shutting down gracefully...")
+                logger.info("正在优雅关闭...")
                 await self.ws_client.stop()
                 await self._send_shutdown_notification()
 
         except KeyboardInterrupt:
-            logger.info("\nStopping WebSocket monitor (KeyboardInterrupt)...")
+            logger.info("\n正在停止 WebSocket 监控 (键盘中断)...")
             await self.ws_client.stop()
-            self.notifier.send_message("👋 Crypto Price Monitoring Bot stopped.")
+            self.notifier.send_message("👋 加密货币价格监控已停止")
         except Exception as e:
-            logger.error(f"Unexpected error in WebSocket monitor: {e}")
+            logger.error(f"WebSocket 监控出现意外错误: {e}")
             if self.ws_client:
                 await self.ws_client.stop()
             raise
@@ -770,18 +812,18 @@ class WebSocketMultiCoinMonitor:
         """Print WebSocket connection statistics"""
         if self.ws_client:
             stats = self.ws_client.get_statistics()
-            print(f"\n📊 WebSocket Statistics:")
-            print(f"  State: {stats['state']}")
-            print(f"  Messages received: {stats['messages_received']}")
-            print(f"  Reconnections: {stats['reconnect_count']}")
-            print(f"  Uptime: {stats['uptime_seconds']:.1f}s")
+            print(f"\n📊 WebSocket 统计:")
+            print(f"  状态: {stats['state']}")
+            print(f"  接收消息: {stats['messages_received']}")
+            print(f"  重连次数: {stats['reconnect_count']}")
+            print(f"  运行时间: {stats['uptime_seconds']:.1f}秒")
             if stats['last_message_time']:
-                print(f"  Last update: {stats['last_message_time']}")
+                print(f"  最后更新: {stats['last_message_time']}")
 
 
 def test_volatility_alert():
     """Test volatility monitoring by sending a test alert"""
-    print("\n=== Testing Volatility Monitoring ===\n")
+    print("\n=== 测试波动监控 ===\n")
 
     config = ConfigManager()
     notifier = TelegramNotifier()
@@ -800,33 +842,33 @@ def test_volatility_alert():
 
                     coin = get_coin_display_name(coin_config.symbol)
 
-                    print(f"Testing {coin}...")
-                    print(f"  Current Price: {format_price(price)}")
-                    print(f"  Volatility Threshold: {coin_config.volatility_percent}%")
-                    print(f"  Simulated Volatility: {fake_volatility:.2f}%")
+                    print(f"测试 {coin}...")
+                    print(f"  当前价格: {format_price(price)}")
+                    print(f"  波动阈值: {coin_config.volatility_percent}%")
+                    print(f"  模拟波动: {fake_volatility:.2f}%")
 
                     # Send test alert
                     message = (
-                        f"🧪 <b>Test Alert - Volatility Monitoring</b>\n"
+                        f"🧪 <b>测试告警 - 波动监控</b>\n"
                         f"🪙 {coin_config.symbol}\n"
-                        f"💰 Current Price: {format_price(price)}\n"
-                        f"📊 Your Alert Threshold: {coin_config.volatility_percent}% in {coin_config.volatility_window}s\n"
-                        f"✅ Volatility monitoring is ACTIVE\n"
-                        f"📈 Simulated Alert: {fake_volatility:.2f}% would trigger alert!\n"
+                        f"💰 当前价格: {format_price(price)}\n"
+                        f"📊 告警阈值: {coin_config.volatility_percent}% / {coin_config.volatility_window}秒\n"
+                        f"✅ 波动监控已激活\n"
+                        f"📈 模拟告警: {fake_volatility:.2f}% 将触发告警!\n"
                         f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
                     )
                     notifier.send_message(message)
-                    print(f"  ✓ Test alert sent!\n")
+                    print(f"  ✓ 测试告警已发送!\n")
             except Exception as e:
-                logger.error(f"Error testing {coin_config.coin_name}: {e}")
+                logger.error(f"测试 {coin_config.coin_name} 时出错: {e}")
 
-    print("Test complete! Check your Telegram for the test alerts.\n")
+    print("测试完成! 请检查 Telegram 中的测试告警。\n")
 
 
 def show_status():
     """Show current monitoring status"""
     print("\n" + "="*60)
-    print("Crypto Price Monitoring Status")
+    print("加密货币价格监控状态")
     print("="*60 + "\n")
 
     config = ConfigManager()
@@ -842,13 +884,13 @@ def show_status():
                     emoji = get_coin_emoji(coin_config.coin_name)
 
                     print(f"{emoji} 🪙 {coin_config.coin_name}")
-                    print(f"   Symbol: {coin_config.symbol}")
-                    print(f"   Current Price: {format_price(price)}")
-                    print(f"   Integer Milestone: every {threshold_str}")
-                    print(f"   Volatility Alert: {coin_config.volatility_percent}% in {coin_config.volatility_window}s")
+                    print(f"   交易对: {coin_config.symbol}")
+                    print(f"   当前价格: {format_price(price)}")
+                    print(f"   里程碑阈值: 每 {threshold_str}")
+                    print(f"   波动告警: {coin_config.volatility_percent}% / {coin_config.volatility_window}秒")
                     print()
             except Exception as e:
-                logger.error(f"Error fetching status for {coin_config.coin_name}: {e}")
+                logger.error(f"获取 {coin_config.coin_name} 状态时出错: {e}")
 
     print("="*60 + "\n")
 
@@ -879,7 +921,7 @@ def main():
         monitor = WebSocketMultiCoinMonitor(config)
         asyncio.run(monitor.run())
     except KeyboardInterrupt:
-        logger.info("\nShutting down gracefully...")
+        logger.info("\n正在优雅关闭...")
 
 
 if __name__ == "__main__":

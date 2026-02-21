@@ -7,9 +7,11 @@ Provides interactive commands and buttons to query cryptocurrency prices
 import asyncio
 import signal
 import os
+import re
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
+from difflib import get_close_matches
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -128,13 +130,15 @@ class TelegramBot:
         """Handle shutdown signals (SIGINT, SIGTERM)"""
         sig_name = signal.Signals(signum).name
         logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
-        
-        # Set the shutdown event (thread-safe)
-        self._shutdown_event.set()
 
-        # Restore original signal handler (cross-platform safe)
+        # Restore original signal handler FIRST to prevent race condition
+        # This ensures a second signal triggers immediate termination
         from common import _restore_signal_handler
-        _restore_signal_handler(signum, self._original_sigint if signum == signal.SIGINT else self._original_sigterm)
+        original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
+        _restore_signal_handler(signum, original_handler)
+
+        # Set the shutdown event to stop the bot (thread-safe)
+        self._shutdown_event.set()
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -199,10 +203,35 @@ class TelegramBot:
         await update.message.reply_text(help_message, parse_mode="HTML", disable_notification=False)
 
     async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /price command"""
+        """Handle /price command with input validation"""
+        MAX_ARG_LENGTH = 20
+        ALLOWED_PATTERN = re.compile(r'^[A-Z0-9]+$')
+
         # Get coin from argument
         if context.args and len(context.args) > 0:
-            coin = context.args[0].upper()
+            coin = context.args[0]
+
+            # Validate input length
+            if len(coin) > MAX_ARG_LENGTH:
+                await update.message.reply_text(
+                    "❌ Coin name too long.\n"
+                    f"Maximum length is {MAX_ARG_LENGTH} characters.",
+                    parse_mode="HTML",
+                    disable_notification=False
+                )
+                return
+
+            # Sanitize - only allow alphanumeric characters
+            coin = coin.upper().strip()
+            if not ALLOWED_PATTERN.match(coin):
+                await update.message.reply_text(
+                    "❌ Invalid coin name format.\n"
+                    "Only letters and numbers are allowed.\n\n"
+                    f"Available coins: {', '.join(self.config.coin_names)}",
+                    parse_mode="HTML",
+                    disable_notification=False
+                )
+                return
         else:
             await update.message.reply_text(
                 "❌ Please specify a coin.\n"
@@ -215,8 +244,12 @@ class TelegramBot:
 
         # Check if coin is valid
         if coin not in self.config.coin_names:
+            # Get fuzzy match suggestions
+            suggestions = get_close_matches(coin, self.config.coin_names, n=1, cutoff=0.5)
+            suggestion_text = f"\n\nDid you mean: <b>{suggestions[0]}</b>?" if suggestions else ""
+
             await update.message.reply_text(
-                f"❌ Unknown coin: {coin}\n\n"
+                f"❌ Unknown coin: {coin}{suggestion_text}\n\n"
                 f"Available coins: {', '.join(self.config.coin_names)}",
                 parse_mode="HTML",
                 disable_notification=False
