@@ -192,6 +192,16 @@ docker compose exec crypto-bot bash
 
 ## 最近更新
 
+### v2.1 (2025-02)
+
+- **类型注解现代化**：统一使用 Python 3.10+ 语法（`X | None`, `dict[str, X]`, `list[X]`）
+- **向后兼容**：保留 `get_logger()` 和 `UTC8` 常量，添加弃用警告平滑迁移
+- **安全加固**：
+  - Telegram Token 保护（未配置时不构造含 Token 的 URL）
+  - 路径遍历防护改进（多路径验证，防止符号链接攻击）
+- **异常处理**：`TelegramNotifier.test_connection()` 添加异常捕获
+- **代码质量**：统一的导入顺序、引号风格和文档字符串
+
 ### v2.0 (2025-02)
 
 - **模块重构**：`common.py` 拆分为 `common/` 包，职责更清晰
