@@ -3,10 +3,37 @@ Configuration management for Crypto Price Monitoring Bot
 """
 
 import os
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
+
+
+def _safe_int_env(name: str, default: int, min_val: int = 0, max_val: int = 1_000_000_000) -> int:
+    """Safely read integer environment variable with bounds."""
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < min_val or value > max_val:
+        return default
+    return value
+
+
+def _safe_float_env(name: str, default: float, min_val: float = 0.0, max_val: float = 1_000_000_000.0) -> float:
+    """Safely read float environment variable with bounds."""
+    raw = os.getenv(name, str(default))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    if value < min_val or value > max_val:
+        return default
+    return value
 
 
 @dataclass
@@ -87,18 +114,18 @@ class ConfigManager:
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         # Note: CHECK_INTERVAL_SECONDS is kept for backwards compatibility but not used
         # (WebSocket mode provides real-time updates without polling)
-        self.check_interval = int(os.getenv("CHECK_INTERVAL_SECONDS", "5"))
+        self.check_interval = _safe_int_env("CHECK_INTERVAL_SECONDS", 5, 1, 86400)
         self.debug_mode = os.getenv("DEBUG", "false").lower() == "true"
         # Volume alert cooldown (global default, can be overridden per coin in the future)
-        self.volume_alert_cooldown_seconds = int(os.getenv("VOLUME_ALERT_COOLDOWN_SECONDS", "5"))
+        self.volume_alert_cooldown_seconds = _safe_int_env("VOLUME_ALERT_COOLDOWN_SECONDS", 5, 0, 86400)
         # Volatility alert cooldown (time between volatility notifications)
-        self.volatility_alert_cooldown_seconds = int(os.getenv("VOLATILITY_ALERT_COOLDOWN_SECONDS", "60"))
+        self.volatility_alert_cooldown_seconds = _safe_int_env("VOLATILITY_ALERT_COOLDOWN_SECONDS", 60, 0, 86400)
         # Milestone alert cooldown (global cooldown for any milestone crossing)
-        self.milestone_alert_cooldown_seconds = int(os.getenv("MILESTONE_ALERT_COOLDOWN_SECONDS", "600"))
+        self.milestone_alert_cooldown_seconds = _safe_int_env("MILESTONE_ALERT_COOLDOWN_SECONDS", 600, 0, 604800)
         # WebSocket keepalive and stale-connection detection
-        self.ws_ping_interval_seconds = float(os.getenv("WS_PING_INTERVAL_SECONDS", "30"))
-        self.ws_pong_timeout_seconds = float(os.getenv("WS_PONG_TIMEOUT_SECONDS", "10"))
-        self.ws_message_timeout_seconds = float(os.getenv("WS_MESSAGE_TIMEOUT_SECONDS", "120"))
+        self.ws_ping_interval_seconds = _safe_float_env("WS_PING_INTERVAL_SECONDS", 30.0, 1.0, 3600.0)
+        self.ws_pong_timeout_seconds = _safe_float_env("WS_PONG_TIMEOUT_SECONDS", 10.0, 1.0, 300.0)
+        self.ws_message_timeout_seconds = _safe_float_env("WS_MESSAGE_TIMEOUT_SECONDS", 120.0, 1.0, 86400.0)
 
         # Get coin list from env or use default
         coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")

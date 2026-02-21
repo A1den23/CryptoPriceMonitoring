@@ -29,7 +29,7 @@ from common import (
     format_price,
     get_coin_display_name,
     get_coin_emoji,
-    UTC8,
+    now_in_configured_timezone,
     logger
 )
 
@@ -102,7 +102,7 @@ class PriceMonitor:
         Returns True if in cooldown (should skip), False if not in cooldown.
         """
         if self.last_milestone_notification_time:
-            now = datetime.now(UTC8)
+            now = now_in_configured_timezone()
             time_since_last = (now - self.last_milestone_notification_time).total_seconds()
             if time_since_last < self.milestone_cooldown_seconds:
                 logger.debug(f"[{coin}] Global cooldown active ({time_since_last:.0f}s ago)")
@@ -140,7 +140,7 @@ class PriceMonitor:
         is_up = current_price > self.last_price
         direction = "📈" if is_up else "📉"
 
-        now = datetime.now(UTC8)
+        now = now_in_configured_timezone()
         self.last_price = current_price
         self.last_milestone_notification_time = now
 
@@ -198,7 +198,7 @@ class PriceMonitor:
 
     def _update_price_history(self, current_price: float) -> list:
         """Update price history and return list of prices"""
-        current_time = datetime.now(UTC8)
+        current_time = now_in_configured_timezone()
         self.price_history.append(PriceData(current_price, current_time))
 
         # Remove old data outside the time window (sliding window)
@@ -289,7 +289,7 @@ class PriceMonitor:
 
     def _send_volatility_alert(self, current_price: float, metrics: dict, reasons: list):
         """Send volatility alert notification"""
-        current_time = datetime.now(UTC8)
+        current_time = now_in_configured_timezone()
         change = current_price - self.price_history[0].price
         change_percent = (change / self.price_history[0].price) * 100
         direction = "📈" if change > 0 else "📉"
@@ -339,7 +339,7 @@ class PriceMonitor:
         volatility_info = f"σ:{metrics['std_dev_pct']:.2f}% Σ:{metrics['cumulative_volatility_pct']:.2f}% R:{metrics['range_volatility_pct']:.2f}%"
 
         # Check cooldown
-        if self._is_in_volatility_cooldown(datetime.now(UTC8)):
+        if self._is_in_volatility_cooldown(now_in_configured_timezone()):
             return volatility_info
 
         # Evaluate thresholds
@@ -371,7 +371,7 @@ class PriceMonitor:
             logger.warning(f"[{self.config.symbol}] Invalid volume data: price={current_price}, volume={volume}")
             return None
 
-        current_time = datetime.now(UTC8)
+        current_time = now_in_configured_timezone()
 
         # Add compact rolling data for current window calculations
         self.volume_history.append({
@@ -566,7 +566,7 @@ class WebSocketMultiCoinMonitor:
     async def _send_shutdown_notification(self):
         """Send shutdown notification via Telegram"""
         try:
-            now = datetime.now(UTC8)
+            now = now_in_configured_timezone()
             uptime = "未知"
 
             if self.ws_client:
@@ -602,7 +602,7 @@ class WebSocketMultiCoinMonitor:
                 self._pending_updates.append(output)
 
         # Print updates periodically
-        current_time = datetime.now(UTC8)
+        current_time = now_in_configured_timezone()
         if (
             self.last_print_time is None
             or (current_time - self.last_print_time).total_seconds() >= self.print_interval
@@ -634,7 +634,7 @@ class WebSocketMultiCoinMonitor:
             updates_to_print = list(self._pending_updates)
             self._pending_updates.clear()
 
-        timestamp = datetime.now(UTC8).strftime('%H:%M:%S')
+        timestamp = now_in_configured_timezone().strftime('%H:%M:%S')
         logger.info(f"实时价格更新 [{timestamp}]:")
         for update in updates_to_print:
             logger.info(f"  {update}")
@@ -652,7 +652,7 @@ class WebSocketMultiCoinMonitor:
 
     def _touch_heartbeat(self):
         """Touch heartbeat file to indicate monitor is actively receiving market updates."""
-        now = datetime.now(UTC8)
+        now = now_in_configured_timezone()
         if self._last_heartbeat_touch and (now - self._last_heartbeat_touch).total_seconds() < 1:
             return
         try:
@@ -665,7 +665,7 @@ class WebSocketMultiCoinMonitor:
     async def _on_disconnect(self, reason: str):
         """Handle WebSocket disconnect event"""
         self._last_disconnect_reason = reason
-        self._disconnect_alert_time = datetime.now(UTC8)
+        self._disconnect_alert_time = now_in_configured_timezone()
 
         # Get first enabled coin name for logging context
         enabled_coins = self.config.get_enabled_coins()
@@ -700,7 +700,7 @@ class WebSocketMultiCoinMonitor:
 
     async def _on_reconnect(self, attempt_count: int):
         """Handle WebSocket reconnect success"""
-        now = datetime.now(UTC8)
+        now = now_in_configured_timezone()
         downtime = ""
         if self._disconnect_alert_time:
             downtime_seconds = (now - self._disconnect_alert_time).total_seconds()
@@ -792,6 +792,19 @@ class WebSocketMultiCoinMonitor:
                 except asyncio.CancelledError:
                     pass
 
+            # Surface WebSocket task failures instead of exiting silently
+            if ws_task in done:
+                try:
+                    ws_task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception("WebSocket 客户端任务异常退出")
+                    raise
+                else:
+                    if not self._shutdown_event.is_set():
+                        raise RuntimeError("WebSocket 客户端意外退出（未收到关闭信号）")
+
             # If shutdown was triggered, handle graceful shutdown
             if self._shutdown_event.is_set():
                 logger.info("正在优雅关闭...")
@@ -855,7 +868,7 @@ def test_volatility_alert():
                         f"📊 告警阈值: {coin_config.volatility_percent}% / {coin_config.volatility_window}秒\n"
                         f"✅ 波动监控已激活\n"
                         f"📈 模拟告警: {fake_volatility:.2f}% 将触发告警!\n"
-                        f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+                        f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
                     )
                     notifier.send_message(message)
                     print(f"  ✓ 测试告警已发送!\n")

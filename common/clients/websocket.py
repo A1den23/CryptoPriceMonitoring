@@ -4,7 +4,7 @@ WebSocket client for Binance real-time price streams
 
 import asyncio
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Callable, Awaitable, Tuple
 from urllib.parse import quote
@@ -12,7 +12,7 @@ from urllib.parse import quote
 import websockets
 
 from ..logging import logger
-from ..utils import UTC8
+from ..utils import get_configured_timezone
 
 
 class ConnectionState(Enum):
@@ -102,6 +102,11 @@ class BinanceWebSocketClient:
 
         return f"{self.BASE_COMBINED_WS_URL}?streams={'/'.join(streams)}"
 
+    @staticmethod
+    def _now() -> datetime:
+        """Get current time in configured timezone."""
+        return datetime.now(get_configured_timezone())
+
     def _parse_ticker_message(self, data: dict) -> Tuple[str, float]:
         """Parse Binance ticker message"""
         try:
@@ -168,7 +173,7 @@ class BinanceWebSocketClient:
 
                             # Update statistics
                             self.messages_received += 1
-                            self.last_message_time = datetime.now(UTC8)
+                            self.last_message_time = self._now()
 
                             # Call user callback
                             try:
@@ -189,7 +194,7 @@ class BinanceWebSocketClient:
                                     if is_closed:
                                         # Update statistics
                                         self.messages_received += 1
-                                        self.last_message_time = datetime.now(UTC8)
+                                        self.last_message_time = self._now()
 
                                         # Call user callback
                                         try:
@@ -293,7 +298,7 @@ class BinanceWebSocketClient:
             if not self.last_message_time:
                 continue
 
-            silence_seconds = (datetime.now(UTC8) - self.last_message_time).total_seconds()
+            silence_seconds = (self._now() - self.last_message_time).total_seconds()
             if silence_seconds <= self.message_timeout:
                 continue
 
@@ -324,9 +329,8 @@ class BinanceWebSocketClient:
             )
 
             self.state = ConnectionState.CONNECTED
-            self.connection_time = datetime.now(UTC8)
-            self.reconnect_count = 0
-            self.last_message_time = datetime.now(UTC8)
+            self.connection_time = self._now()
+            self.last_message_time = self._now()
 
             logger.info("WebSocket connected successfully")
 
@@ -347,20 +351,26 @@ class BinanceWebSocketClient:
             logger.error(f"Connection failed: {e}")
             return False
 
-    async def _reconnect_loop(self):
-        """Handle reconnection logic"""
+    async def _reconnect_loop(self) -> bool:
+        """Handle reconnection logic.
+
+        Returns:
+            True: reconnected successfully
+            False: stopped or exhausted retries
+        """
+        failed_attempts = 0
         while not self._stop_event.is_set():
             # Check max reconnection attempts
             if (
                 self.max_reconnect_attempts is not None
-                and self.reconnect_count >= self.max_reconnect_attempts
+                and failed_attempts >= self.max_reconnect_attempts
             ):
                 logger.error(f"Max reconnection attempts ({self.max_reconnect_attempts}) reached")
                 self.state = ConnectionState.DISCONNECTED
-                break
+                return False
 
             # Wait before reconnecting
-            attempt_no = self.reconnect_count + 1
+            attempt_no = failed_attempts + 1
             logger.info(f"Reconnecting in {self.reconnect_delay}s... (attempt {attempt_no})")
             await asyncio.sleep(self.reconnect_delay)
 
@@ -372,28 +382,46 @@ class BinanceWebSocketClient:
             if success:
                 # Connection successful, reset alert flag and call callback
                 await self._reset_disconnect_alert_flag()
+                self.reconnect_count += 1
                 if self.on_reconnect_callback:
                     try:
-                        await self.on_reconnect_callback(attempt_no)
+                        await self.on_reconnect_callback(self.reconnect_count)
                     except Exception as cb_err:
                         logger.error(f"Error in reconnect callback: {cb_err}")
-                return
+                return True
 
-            self.reconnect_count = attempt_no
+            failed_attempts = attempt_no
+
+        return False
+
+    async def _cancel_runtime_tasks(self) -> None:
+        """Cancel runtime tasks created for a live connection."""
+        tasks = [t for t in (self._message_task, self._ping_task, self._watchdog_task) if t]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._message_task = None
+        self._ping_task = None
+        self._watchdog_task = None
 
     async def start(self):
         """Start WebSocket connection with auto-reconnect"""
         logger.info("Starting Binance WebSocket client...")
 
         while not self._stop_event.is_set():
-            # Initial connection
-            success = await self._connect()
-
-            if not success:
-                logger.error("Failed to establish initial connection")
-                self.state = ConnectionState.RECONNECTING
-                await self._reconnect_loop()
-                continue
+            # Connect only when not already connected.
+            # This avoids creating duplicate sockets after reconnect succeeds.
+            if self.state != ConnectionState.CONNECTED:
+                success = await self._connect()
+                if not success:
+                    logger.error("Failed to establish connection")
+                    self.state = ConnectionState.RECONNECTING
+                    reconnect_success = await self._reconnect_loop()
+                    if not reconnect_success:
+                        if self.max_reconnect_attempts is not None:
+                            break
+                        continue
 
             # Connection established, wait for disconnection
             while self.state == ConnectionState.CONNECTED and not self._stop_event.is_set():
@@ -405,29 +433,12 @@ class BinanceWebSocketClient:
                 self.state = ConnectionState.RECONNECTING
 
                 # Cancel old tasks
-                if self._message_task:
-                    self._message_task.cancel()
-                    try:
-                        await self._message_task
-                    except asyncio.CancelledError:
-                        pass
-
-                if self._ping_task:
-                    self._ping_task.cancel()
-                    try:
-                        await self._ping_task
-                    except asyncio.CancelledError:
-                        pass
-
-                if self._watchdog_task:
-                    self._watchdog_task.cancel()
-                    try:
-                        await self._watchdog_task
-                    except asyncio.CancelledError:
-                        pass
+                await self._cancel_runtime_tasks()
 
                 # Enter reconnection loop
-                await self._reconnect_loop()
+                reconnect_success = await self._reconnect_loop()
+                if not reconnect_success and self.max_reconnect_attempts is not None:
+                    break
 
         # Cleanup
         await self._cleanup()
@@ -443,12 +454,7 @@ class BinanceWebSocketClient:
     async def _cleanup(self):
         """Cleanup resources with proper task cancellation"""
         # Cancel tasks and wait for them to complete
-        tasks = [t for t in (self._message_task, self._ping_task, self._watchdog_task) if t]
-        for task in tasks:
-            task.cancel()
-
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._cancel_runtime_tasks()
 
         # Close WebSocket
         if self.websocket:
@@ -456,6 +462,8 @@ class BinanceWebSocketClient:
                 await self.websocket.close()
             except Exception as e:
                 logger.debug(f"Error closing WebSocket: {e}")
+            finally:
+                self.websocket = None
 
         logger.info("WebSocket client stopped")
 
@@ -468,7 +476,7 @@ class BinanceWebSocketClient:
             "connection_time": self.connection_time.isoformat() if self.connection_time else None,
             "last_message_time": self.last_message_time.isoformat() if self.last_message_time else None,
             "uptime_seconds": (
-                (datetime.now(UTC8) - self.connection_time).total_seconds()
+                (self._now() - self.connection_time).total_seconds()
                 if self.connection_time
                 else 0
             ),

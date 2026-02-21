@@ -8,6 +8,7 @@ import asyncio
 import signal
 import os
 import re
+import math
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
@@ -23,7 +24,7 @@ from common import (
     TelegramNotifier,
     format_price,
     get_coin_emoji,
-    UTC8,
+    now_in_configured_timezone,
     logger
 )
 
@@ -61,7 +62,11 @@ class TelegramBot:
         # Track start time
         self.start_time: Optional[datetime] = None
         self._heartbeat_file = Path(os.getenv("BOT_HEARTBEAT_FILE", "/tmp/bot_heartbeat"))
-        self._heartbeat_interval = float(os.getenv("BOT_HEARTBEAT_INTERVAL_SECONDS", "30"))
+        try:
+            heartbeat_interval = float(os.getenv("BOT_HEARTBEAT_INTERVAL_SECONDS", "30"))
+            self._heartbeat_interval = heartbeat_interval if (math.isfinite(heartbeat_interval) and heartbeat_interval > 0) else 30.0
+        except (TypeError, ValueError):
+            self._heartbeat_interval = 30.0
 
         logger.info("Telegram Bot initialized successfully")
 
@@ -106,7 +111,7 @@ class TelegramBot:
         if not self.start_time:
             return "Unknown"
 
-        now = datetime.now(UTC8)
+        now = now_in_configured_timezone()
         uptime_seconds = (now - self.start_time).total_seconds()
 
         hours = int(uptime_seconds // 3600)
@@ -266,7 +271,7 @@ class TelegramBot:
         enabled_coins = self.config.get_enabled_coins()
         if not enabled_coins:
             status_message += "❌ No coins are currently enabled!"
-            status_message += f"\n\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            status_message += f"\n\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
             await update.message.reply_text(status_message, parse_mode="HTML", disable_notification=False)
             return
 
@@ -296,7 +301,7 @@ class TelegramBot:
         # Add uptime and timestamp
         uptime = self._format_uptime()
         status_message += f"\n⌛ Uptime: {uptime}"
-        status_message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+        status_message += f"\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
 
         await update.message.reply_text(status_message, parse_mode="HTML", disable_notification=False)
 
@@ -307,7 +312,7 @@ class TelegramBot:
         enabled_coins = self.config.get_enabled_coins()
         if not enabled_coins:
             message += "❌ No coins are currently enabled!"
-            message += f"\n\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            message += f"\n\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
             await update.message.reply_text(message, parse_mode="HTML", disable_notification=False)
             return
 
@@ -321,7 +326,7 @@ class TelegramBot:
             else:
                 message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
 
-        message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+        message += f"\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
 
         await update.message.reply_text(message, parse_mode="HTML", disable_notification=False)
 
@@ -346,7 +351,7 @@ class TelegramBot:
                 else:
                     message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
 
-            message += f"\n⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            message += f"\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
 
             # Send new message instead of editing
             await query.message.reply_text(text=message, parse_mode="HTML", disable_notification=False)
@@ -396,7 +401,7 @@ class TelegramBot:
                     f"{emoji} <b>{coin_name}</b> Price Update\n"
                     f"💰 Current: {format_price(price)}\n"
                     f"📈 Symbol: {coin_config.symbol}\n"
-                    f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
                 # Create keyboard with buttons
@@ -464,7 +469,7 @@ class TelegramBot:
         self._touch_heartbeat()
 
         # Record start time
-        self.start_time = datetime.now(UTC8)
+        self.start_time = now_in_configured_timezone()
         heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         async with AsyncBinancePriceFetcher() as fetcher:
@@ -516,7 +521,7 @@ def main():
             "/status - Show detailed status\n"
             "/all - Get all prices\n"
             "/help - Show help message\n\n"
-            f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         notifier.send_message(startup_message)
         logger.info("Startup notification sent")
@@ -530,7 +535,7 @@ def main():
             shutdown_message = (
                 "👋 <b>Telegram Interactive Bot Stopped</b>\n\n"
                 "Bot has been shut down gracefully.\n\n"
-                f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+                f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
             )
             notifier.send_message(shutdown_message)
             logger.info("Shutdown notification sent")
@@ -545,7 +550,7 @@ def main():
         shutdown_message = (
             "👋 <b>Telegram Interactive Bot Stopped</b>\n\n"
             "Bot has been shut down gracefully.\n\n"
-            f"⏱️ {datetime.now(UTC8).strftime('%Y-%m-%d %H:%M:%S')}"
+            f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         notifier.send_message(shutdown_message)
         logger.info("Shutdown notification sent")
