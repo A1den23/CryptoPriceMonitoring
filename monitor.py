@@ -69,8 +69,15 @@ class PriceMonitor:
         self.last_cumulative_volatility: float = 0.0
 
         # Volume anomaly monitoring
-        # Klines update once per minute, add buffer for window
-        max_volume_history = max(config.volatility_window // 60 + 5, 10)
+        # Keep at least a 3-minute window so minimum sample count is reachable for 1m klines.
+        self.volume_window_seconds = max(
+            config.volatility_window,
+            self.MIN_VOLUME_DATA_POINTS * self.KLINE_INTERVAL_SECONDS,
+        )
+        max_volume_history = max(
+            self.volume_window_seconds // self.KLINE_INTERVAL_SECONDS + 5,
+            self.MIN_VOLUME_DATA_POINTS + 2,
+        )
         self.volume_history: deque = deque(maxlen=max_volume_history)
         self.last_volume_alert_time: datetime | None = None
         self.volume_alert_cooldown_seconds = volume_alert_cooldown_seconds
@@ -80,6 +87,7 @@ class PriceMonitor:
     # Constants for volume monitoring
     MIN_VOLUME_DATA_POINTS = 3  # Minimum data points needed for volume comparison
     MIN_VOLUME_VALUE = 0.0001  # Minimum valid volume value to prevent zero/negative issues
+    KLINE_INTERVAL_SECONDS = 60  # Binance 1m kline close interval
 
     def _calculate_milestone(self, price: float, threshold: float) -> float:
         """Calculate the milestone for a given price and threshold."""
@@ -378,8 +386,8 @@ class PriceMonitor:
             "timestamp": current_time
         })
 
-        # Remove old data outside the time window
-        cutoff_time = current_time - timedelta(seconds=self.config.volatility_window)
+        # Remove old data outside the effective volume window.
+        cutoff_time = current_time - timedelta(seconds=self.volume_window_seconds)
         while self.volume_history and self.volume_history[0]["timestamp"] < cutoff_time:
             self.volume_history.popleft()
 
@@ -601,6 +609,7 @@ class WebSocketMultiCoinMonitor:
 
         # Check price for alerts (returns None if price hasn't changed)
         output = monitor.check(price)
+        self._touch_heartbeat()
 
         # Only add to pending updates if price has changed (thread-safe)
         if output is not None:
