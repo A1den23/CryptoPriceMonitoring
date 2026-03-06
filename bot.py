@@ -19,16 +19,16 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from common import (
     setup_logging,
     ConfigManager,
+    CoinConfig,
+    load_environment,
     AsyncBinancePriceFetcher,
     TelegramNotifier,
     format_price,
+    format_threshold,
     get_coin_emoji,
     now_in_configured_timezone,
     logger
 )
-
-# Setup logging
-setup_logging(log_file="logs/bot.log")
 
 
 class TelegramBot:
@@ -159,6 +159,97 @@ class TelegramBot:
             # Signal might not be available on this platform (e.g., Windows)
             pass
 
+    @staticmethod
+    def _chunk_buttons(
+        buttons: list[InlineKeyboardButton],
+        row_size: int = 2,
+    ) -> list[list[InlineKeyboardButton]]:
+        """Group buttons into rows of a fixed size."""
+        return [buttons[i:i + row_size] for i in range(0, len(buttons), row_size)]
+
+    @staticmethod
+    def _format_timestamp() -> str:
+        """Format the current configured timestamp consistently."""
+        return now_in_configured_timezone().strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _format_threshold(coin_config: CoinConfig) -> str:
+        """Format milestone threshold for display."""
+        return format_threshold(coin_config.integer_threshold)
+
+    async def _send_or_edit_message(
+        self,
+        chat_id,
+        text: str,
+        message=None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
+        """Edit an existing message or send a new one."""
+        if message:
+            await message.edit_text(text=text, parse_mode="HTML", reply_markup=reply_markup)
+            return
+
+        await self.application.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+            disable_notification=False,
+        )
+
+    def _build_coin_button_rows(
+        self,
+        exclude_coin: str | None = None,
+    ) -> list[list[InlineKeyboardButton]]:
+        """Build rows of enabled coin buttons."""
+        buttons: list[InlineKeyboardButton] = []
+        for coin_config in self.config.get_enabled_coins():
+            if coin_config.coin_name == exclude_coin:
+                continue
+            emoji = get_coin_emoji(coin_config.coin_name)
+            buttons.append(
+                InlineKeyboardButton(
+                    f"{emoji} {coin_config.coin_name}",
+                    callback_data=f"price_{coin_config.coin_name}",
+                )
+            )
+        return self._chunk_buttons(buttons)
+
+    def _build_start_keyboard(self) -> InlineKeyboardMarkup:
+        """Build the keyboard shown on /start."""
+        keyboard = [[InlineKeyboardButton("📊 All Prices", callback_data="all_prices")]]
+        keyboard.extend(self._build_coin_button_rows())
+        return InlineKeyboardMarkup(keyboard)
+
+    def _build_price_keyboard(self, coin_name: str) -> InlineKeyboardMarkup:
+        """Build the keyboard shown for a specific coin price update."""
+        keyboard = [
+            [InlineKeyboardButton(f"🔄 Refresh {coin_name}", callback_data=f"price_{coin_name}")],
+            [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")],
+        ]
+        keyboard.extend(self._build_coin_button_rows(exclude_coin=coin_name))
+        return InlineKeyboardMarkup(keyboard)
+
+    def _render_all_prices_message(
+        self,
+        enabled_coins: list[CoinConfig],
+        prices: dict[str, float | None],
+    ) -> str:
+        """Render the shared all-prices message body."""
+        message = "💰 <b>Current Prices</b>\n\n"
+        if not enabled_coins:
+            return f"{message}❌ No coins are currently enabled!\n\n⏱️ {self._format_timestamp()}"
+
+        for coin_config in enabled_coins:
+            price = prices.get(coin_config.symbol)
+            if price is not None:
+                emoji = get_coin_emoji(coin_config.coin_name)
+                message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
+            else:
+                message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
+
+        return f"{message}\n⏱️ {self._format_timestamp()}"
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         welcome_message = (
@@ -172,30 +263,10 @@ class TelegramBot:
             "Or click the buttons below for quick access! 👇"
         )
 
-        # Create inline keyboard with enabled coins
-        keyboard = [
-            [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")]
-        ]
-
-        # Add coin buttons in rows of 2
-        enabled_coins = self.config.get_enabled_coins()
-        coin_buttons = []
-        for coin_config in enabled_coins:
-            emoji = get_coin_emoji(coin_config.coin_name)
-            coin_buttons.append(
-                InlineKeyboardButton(f"{emoji} {coin_config.coin_name}", callback_data=f"price_{coin_config.coin_name}")
-            )
-
-        # Group buttons into rows of 2
-        for i in range(0, len(coin_buttons), 2):
-            keyboard.append(coin_buttons[i:i+2])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
         await update.message.reply_text(
             welcome_message,
             parse_mode="HTML",
-            reply_markup=reply_markup,
+            reply_markup=self._build_start_keyboard(),
             disable_notification=False
         )
 
@@ -297,18 +368,12 @@ class TelegramBot:
                 status_message += f"❌ <b>{coin_config.coin_name}</b>: Error fetching data\n\n"
                 continue
 
-            # Format threshold
-            if coin_config.integer_threshold >= 1:
-                threshold_str = f"${int(coin_config.integer_threshold):,}"
-            else:
-                threshold_str = f"${coin_config.integer_threshold}"
-
             emoji = get_coin_emoji(coin_config.coin_name)
 
             status_message += (
                 f"{emoji} <b>{coin_config.coin_name}</b> ({coin_config.symbol})\n"
                 f"   💰 Price: {format_price(price)}\n"
-                f"   📍 Milestone: every {threshold_str}\n"
+                f"   📍 Milestone: every {self._format_threshold(coin_config)}\n"
                 f"   📊 Volatility Alert: {coin_config.volatility_percent}%/{coin_config.volatility_window}s\n\n"
             )
 
@@ -321,27 +386,9 @@ class TelegramBot:
 
     async def all_prices_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /all command - show all prices"""
-        message = "💰 <b>Current Prices</b>\n\n"
-
         enabled_coins = self.config.get_enabled_coins()
-        if not enabled_coins:
-            message += "❌ No coins are currently enabled!"
-            message += f"\n\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
-            await update.message.reply_text(message, parse_mode="HTML", disable_notification=False)
-            return
-
         prices = await self._get_prices([c.symbol for c in enabled_coins])
-
-        for coin_config in enabled_coins:
-            price = prices.get(coin_config.symbol)
-            if price is not None:
-                emoji = get_coin_emoji(coin_config.coin_name)
-                message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
-            else:
-                message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
-
-        message += f"\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
-
+        message = self._render_all_prices_message(enabled_coins, prices)
         await update.message.reply_text(message, parse_mode="HTML", disable_notification=False)
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -353,19 +400,9 @@ class TelegramBot:
 
         if callback_data == "all_prices":
             # Send all prices as new message
-            message = "💰 <b>Current Prices</b>\n\n"
-
             enabled_coins = self.config.get_enabled_coins()
             prices = await self._get_prices([c.symbol for c in enabled_coins])
-            for coin_config in enabled_coins:
-                price = prices.get(coin_config.symbol)
-                if price is not None:
-                    emoji = get_coin_emoji(coin_config.coin_name)
-                    message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
-                else:
-                    message += f"❌ <b>{coin_config.coin_name}</b>: Failed to fetch\n"
-
-            message += f"\n⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
+            message = self._render_all_prices_message(enabled_coins, prices)
 
             # Send new message instead of editing
             await query.message.reply_text(text=message, parse_mode="HTML", disable_notification=False)
@@ -380,29 +417,19 @@ class TelegramBot:
         coin_config = self.config.get_coin_config(coin_name)
 
         if not coin_config:
-            msg = f"❌ {coin_name} is not configured."
-            if message:
-                await message.edit_text(text=msg, parse_mode="HTML")
-            else:
-                await self.application.bot.send_message(
-                    chat_id=chat_id,
-                    text=msg,
-                    parse_mode="HTML",
-                    disable_notification=False
-                )
+            await self._send_or_edit_message(
+                chat_id,
+                f"❌ {coin_name} is not configured.",
+                message=message,
+            )
             return
 
         if not coin_config.enabled:
-            msg = f"❌ {coin_name} is not enabled in configuration."
-            if message:
-                await message.edit_text(text=msg, parse_mode="HTML")
-            else:
-                await self.application.bot.send_message(
-                    chat_id=chat_id,
-                    text=msg,
-                    parse_mode="HTML",
-                    disable_notification=False
-                )
+            await self._send_or_edit_message(
+                chat_id,
+                f"❌ {coin_name} is not enabled in configuration.",
+                message=message,
+            )
             return
 
         try:
@@ -415,67 +442,27 @@ class TelegramBot:
                     f"{emoji} <b>{coin_name}</b> Price Update\n"
                     f"💰 Current: {format_price(price)}\n"
                     f"📈 Symbol: {coin_config.symbol}\n"
-                    f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"⏱️ {self._format_timestamp()}"
                 )
-
-                # Create keyboard with buttons
-                keyboard = [
-                    [InlineKeyboardButton(f"🔄 Refresh {coin_name}", callback_data=f"price_{coin_name}")],
-                    [InlineKeyboardButton("📊 All Prices", callback_data="all_prices")],
-                ]
-
-                # Add buttons for other coins (exclude current coin)
-                enabled_coins = self.config.get_enabled_coins()
-                other_coins = [c for c in enabled_coins if c.coin_name != coin_name]
-
-                # Add other coin buttons in rows of 2
-                if other_coins:
-                    coin_buttons = []
-                    for coin in other_coins:
-                        coin_emoji = get_coin_emoji(coin.coin_name)
-                        coin_buttons.append(
-                            InlineKeyboardButton(f"{coin_emoji} {coin.coin_name}", callback_data=f"price_{coin.coin_name}")
-                        )
-
-                    # Group into rows of 2
-                    for i in range(0, len(coin_buttons), 2):
-                        keyboard.append(coin_buttons[i:i+2])
-
-                reply_markup = InlineKeyboardMarkup(keyboard)
-
-                if message:
-                    await message.edit_text(text=response, parse_mode="HTML", reply_markup=reply_markup)
-                else:
-                    await self.application.bot.send_message(
-                        chat_id=chat_id,
-                        text=response,
-                        parse_mode="HTML",
-                        reply_markup=reply_markup,
-                        disable_notification=False
-                    )
+                await self._send_or_edit_message(
+                    chat_id,
+                    response,
+                    message=message,
+                    reply_markup=self._build_price_keyboard(coin_name),
+                )
             else:
-                error_msg = f"❌ Failed to fetch price for {coin_name}"
-                if message:
-                    await message.edit_text(text=error_msg, parse_mode="HTML")
-                else:
-                    await self.application.bot.send_message(
-                        chat_id=chat_id,
-                        text=error_msg,
-                        parse_mode="HTML",
-                        disable_notification=False
-                    )
+                await self._send_or_edit_message(
+                    chat_id,
+                    f"❌ Failed to fetch price for {coin_name}",
+                    message=message,
+                )
         except Exception as e:
             logger.error(f"Error sending price update for {coin_name}: {e}")
-            error_msg = f"❌ Error fetching price for {coin_name}"
-            if message:
-                await message.edit_text(text=error_msg, parse_mode="HTML")
-            else:
-                await self.application.bot.send_message(
-                    chat_id=chat_id,
-                    text=error_msg,
-                    parse_mode="HTML",
-                    disable_notification=False
-                )
+            await self._send_or_edit_message(
+                chat_id,
+                f"❌ Error fetching price for {coin_name}",
+                message=message,
+            )
 
     async def run_async(self):
         """Start the bot asynchronously"""
@@ -518,6 +505,9 @@ class TelegramBot:
 
 def main():
     """Main entry point"""
+    load_environment()
+    setup_logging(log_file="logs/bot.log")
+
     # Load configuration
     config = ConfigManager()
     notifier = TelegramNotifier()
@@ -537,8 +527,11 @@ def main():
             "/help - Show help message\n\n"
             f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        notifier.send_message(startup_message)
-        logger.info("Startup notification sent")
+        try:
+            notifier.send_message(startup_message)
+            logger.info("Startup notification sent")
+        except Exception:
+            logger.exception("Startup notification failed")
 
         # Run the bot
         bot.run()
@@ -551,8 +544,11 @@ def main():
                 "Bot has been shut down gracefully.\n\n"
                 f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
             )
-            notifier.send_message(shutdown_message)
-            logger.info("Shutdown notification sent")
+            try:
+                notifier.send_message(shutdown_message)
+                logger.info("Shutdown notification sent")
+            except Exception:
+                logger.exception("Shutdown notification failed")
 
     except ValueError as e:
         logger.error(f"Configuration error: {e}")

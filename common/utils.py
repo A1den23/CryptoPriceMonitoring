@@ -3,12 +3,13 @@ Utility functions for Crypto Price Monitoring Bot
 """
 
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone, tzinfo
+from functools import lru_cache
 
 
-def get_configured_timezone() -> timezone:
-    """Get configured timezone, defaults to Asia/Shanghai (UTC+8)"""
-    tz_name = os.getenv("TIMEZONE", "Asia/Shanghai")
+@lru_cache(maxsize=32)
+def _resolve_timezone(tz_name: str) -> tzinfo:
+    """Resolve a timezone name once and reuse it across hot paths."""
     try:
         # Try to use zoneinfo for timezone (Python 3.9+)
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -39,6 +40,12 @@ def get_configured_timezone() -> timezone:
     return timezone(timedelta(hours=offset_hours))
 
 
+def get_configured_timezone() -> tzinfo:
+    """Get configured timezone, defaults to Asia/Shanghai (UTC+8)."""
+    tz_name = os.getenv("TIMEZONE", "Asia/Shanghai")
+    return _resolve_timezone(tz_name)
+
+
 def now_in_configured_timezone() -> datetime:
     """Get current datetime in configured timezone."""
     return datetime.now(get_configured_timezone())
@@ -61,6 +68,15 @@ def format_price(price: float) -> str:
         return f"${price:.2f}"
     else:
         return f"${price:.4f}"
+
+
+def format_threshold(threshold: float) -> str:
+    """Format milestone thresholds without truncating non-integer steps."""
+    if threshold >= 1 and threshold.is_integer():
+        return f"${int(threshold):,}"
+    if threshold >= 1:
+        return f"${threshold:,.4f}".rstrip("0").rstrip(".")
+    return f"${threshold}"
 
 
 def get_coin_display_name(symbol: str) -> str:

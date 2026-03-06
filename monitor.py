@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,10 +23,12 @@ from common import (
     setup_logging,
     ConfigManager,
     CoinConfig,
+    load_environment,
     BinancePriceFetcher,
     BinanceWebSocketClient,
     TelegramNotifier,
     format_price,
+    format_threshold,
     get_coin_display_name,
     get_coin_emoji,
     now_in_configured_timezone,
@@ -33,11 +36,28 @@ from common import (
 )
 
 
+@dataclass(slots=True)
 class PriceData:
-    """Store price data with timestamp"""
-    def __init__(self, price: float, timestamp: datetime):
-        self.price = price
-        self.timestamp = timestamp
+    """Compact price sample used for rolling volatility calculations."""
+    price: float
+    timestamp: datetime
+
+
+@dataclass(slots=True)
+class VolumeData:
+    """Compact volume sample used for anomaly detection."""
+    price: float
+    volume: float
+    timestamp: datetime
+
+
+@dataclass(slots=True)
+class VolatilityMetrics:
+    """Volatility metrics derived from a rolling price window."""
+    std_dev_pct: float
+    cumulative_volatility_pct: float
+    range_volatility_pct: float
+    acceleration: float
 
 
 class PriceMonitor:
@@ -50,9 +70,18 @@ class PriceMonitor:
         self.notifier = notifier
 
         # State tracking
-        # Calculate max history size based on window and expected update frequency
-        # WebSocket updates ~20 times per second, keep 2x buffer
-        max_price_history = max(int(config.volatility_window * 20 * 2), 100)
+        # Keep a bounded number of representative samples per window instead of every tick.
+        self.price_sample_interval_seconds = max(
+            self.MIN_PRICE_SAMPLE_INTERVAL_SECONDS,
+            config.volatility_window / self.MAX_PRICE_HISTORY_SAMPLES,
+        )
+        max_price_history = max(
+            min(
+                math.ceil(config.volatility_window / self.price_sample_interval_seconds) + 2,
+                self.MAX_PRICE_HISTORY_SAMPLES + 2,
+            ),
+            self.MIN_PRICE_HISTORY_SAMPLES,
+        )
         self.price_history: deque[PriceData] = deque(maxlen=max_price_history)
         self.last_price: float | None = None
         self.last_processed_price: float | None = None  # Last price that triggered alerts
@@ -78,13 +107,16 @@ class PriceMonitor:
             self.volume_window_seconds // self.KLINE_INTERVAL_SECONDS + 5,
             self.MIN_VOLUME_DATA_POINTS + 2,
         )
-        self.volume_history: deque = deque(maxlen=max_volume_history)
+        self.volume_history: deque[VolumeData] = deque(maxlen=max_volume_history)
         self.last_volume_alert_time: datetime | None = None
         self.volume_alert_cooldown_seconds = volume_alert_cooldown_seconds
         self.latest_volume_info: str | None = None  # Store latest volume info for display
         self._notification_tasks: set[asyncio.Task] = set()
 
-    # Constants for volume monitoring
+    # Constants for price/volume monitoring
+    MIN_PRICE_SAMPLE_INTERVAL_SECONDS = 0.25
+    MIN_PRICE_HISTORY_SAMPLES = 100
+    MAX_PRICE_HISTORY_SAMPLES = 600
     MIN_VOLUME_DATA_POINTS = 3  # Minimum data points needed for volume comparison
     MIN_VOLUME_VALUE = 0.0001  # Minimum valid volume value to prevent zero/negative issues
     KLINE_INTERVAL_SECONDS = 60  # Binance 1m kline close interval
@@ -94,14 +126,8 @@ class PriceMonitor:
         if threshold <= 0:
             raise ValueError(f"Invalid threshold for {self.config.symbol}: {threshold}")
 
-        if threshold >= 1:
-            # For larger thresholds, use integer-based checking (BTC, ETH, SOL)
-            price_int = int(price)
-            return int(price_int / threshold) * threshold
-
-        # For small thresholds, use floor to avoid premature upward milestone alerts.
-        # A small epsilon mitigates floating-point boundary jitter.
-        epsilon = 1e-12
+        # Use floor-based stepping for all thresholds so values like 2.5 work correctly.
+        epsilon = max(threshold * 1e-9, 1e-12)
         return math.floor((price + epsilon) / threshold) * threshold
 
     def _is_in_milestone_cooldown(self, coin: str) -> bool:
@@ -162,10 +188,7 @@ class PriceMonitor:
         self._send_notification(message)
 
         # Format milestone for logging
-        if self.config.integer_threshold >= 1:
-            milestone_str = f"${current_milestone:,}"
-        else:
-            milestone_str = format_price(current_milestone)
+        milestone_str = format_threshold(current_milestone)
         logger.info(f"[{coin}] 突破里程碑: {milestone_str}")
 
     def check_integer_milestone(self, current_price: float) -> bool:
@@ -202,10 +225,20 @@ class PriceMonitor:
         self.last_price = current_price
         return False
 
-    def _update_price_history(self, current_price: float) -> list:
-        """Update price history and return list of prices"""
-        current_time = now_in_configured_timezone()
+    def _append_price_sample(self, current_price: float, current_time: datetime) -> None:
+        """Add or refresh the most recent representative price sample."""
+        if self.price_history:
+            elapsed_seconds = (current_time - self.price_history[-1].timestamp).total_seconds()
+            if elapsed_seconds < self.price_sample_interval_seconds:
+                self.price_history[-1] = PriceData(current_price, current_time)
+                return
+
         self.price_history.append(PriceData(current_price, current_time))
+
+    def _update_price_history(self, current_price: float) -> list[float]:
+        """Update price history and return rolling window prices."""
+        current_time = now_in_configured_timezone()
+        self._append_price_sample(current_price, current_time)
 
         # Remove old data outside the time window (sliding window)
         cutoff_time = current_time - timedelta(seconds=self.config.volatility_window)
@@ -214,27 +247,27 @@ class PriceMonitor:
 
         return [p.price for p in self.price_history]
 
-    def _calculate_std_dev_metric(self, prices: list) -> float:
+    def _calculate_std_dev_metric(self, prices: list[float]) -> float:
         """Calculate standard deviation percentage"""
         mean_price = sum(prices) / len(prices)
         variance = sum((p - mean_price) ** 2 for p in prices) / len(prices)
         std_dev = variance ** 0.5
         return (std_dev / mean_price) * 100 if mean_price > 0 else 0
 
-    def _calculate_cumulative_metric(self, prices: list) -> float:
+    def _calculate_cumulative_metric(self, prices: list[float]) -> float:
         """Calculate cumulative volatility percentage"""
         if len(prices) < 2:
             return 0.0
         cumulative_change = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices)))
         return (cumulative_change / prices[0]) * 100 if prices[0] > 0 else 0
 
-    def _calculate_range_metric(self, prices: list) -> float:
+    def _calculate_range_metric(self, prices: list[float]) -> float:
         """Calculate min/max range volatility percentage"""
         min_price = min(prices)
         max_price = max(prices)
         return ((max_price - min_price) / min_price) * 100 if min_price > 0 else 0
 
-    def _calculate_acceleration_metric(self, prices: list) -> float:
+    def _calculate_acceleration_metric(self, prices: list[float]) -> float:
         """Calculate volatility acceleration"""
         if len(prices) < 4:
             return 1
@@ -246,15 +279,28 @@ class PriceMonitor:
         avg_change = (sum(recent_changes) / len(recent_changes)) if recent_changes else 0
         return (max(recent_changes) / avg_change) if avg_change > 0 else 1
 
-    def _evaluate_volatility_thresholds(self, metrics: dict, threshold: float) -> tuple:
+    def _build_volatility_metrics(self, prices: list[float]) -> VolatilityMetrics:
+        """Build volatility metrics from the current rolling price window."""
+        return VolatilityMetrics(
+            std_dev_pct=self._calculate_std_dev_metric(prices),
+            cumulative_volatility_pct=self._calculate_cumulative_metric(prices),
+            range_volatility_pct=self._calculate_range_metric(prices),
+            acceleration=self._calculate_acceleration_metric(prices),
+        )
+
+    def _evaluate_volatility_thresholds(
+        self,
+        metrics: VolatilityMetrics,
+        threshold: float,
+    ) -> tuple[bool, list[str]]:
         """
         Evaluate if volatility exceeds thresholds
         Returns: (is_volatile, reasons)
         """
-        std_dev_pct = metrics['std_dev_pct']
-        cumulative_volatility_pct = metrics['cumulative_volatility_pct']
-        range_volatility_pct = metrics['range_volatility_pct']
-        acceleration = metrics['acceleration']
+        std_dev_pct = metrics.std_dev_pct
+        cumulative_volatility_pct = metrics.cumulative_volatility_pct
+        range_volatility_pct = metrics.range_volatility_pct
+        acceleration = metrics.acceleration
 
         # Cumulative volatility alert logic: dynamic tracking
         cumulative_alert = False
@@ -293,7 +339,7 @@ class PriceMonitor:
         time_since_last = (current_time - self.last_volatility_notification_time).total_seconds()
         return time_since_last < self.volatility_cooldown_seconds
 
-    def _send_volatility_alert(self, current_price: float, metrics: dict, reasons: list):
+    def _send_volatility_alert(self, current_price: float, reasons: list[str]) -> None:
         """Send volatility alert notification"""
         current_time = now_in_configured_timezone()
         change = current_price - self.price_history[0].price
@@ -334,27 +380,26 @@ class PriceMonitor:
             return None
 
         # Calculate all metrics
-        metrics = {
-            'std_dev_pct': self._calculate_std_dev_metric(prices),
-            'cumulative_volatility_pct': self._calculate_cumulative_metric(prices),
-            'range_volatility_pct': self._calculate_range_metric(prices),
-            'acceleration': self._calculate_acceleration_metric(prices),
-        }
+        metrics = self._build_volatility_metrics(prices)
 
         # Format volatility info for display
-        volatility_info = f"σ:{metrics['std_dev_pct']:.2f}% Σ:{metrics['cumulative_volatility_pct']:.2f}% R:{metrics['range_volatility_pct']:.2f}%"
+        volatility_info = (
+            f"σ:{metrics.std_dev_pct:.2f}% "
+            f"Σ:{metrics.cumulative_volatility_pct:.2f}% "
+            f"R:{metrics.range_volatility_pct:.2f}%"
+        )
+
+        # Evaluate thresholds before cooldown so cumulative tracking stays fresh.
+        threshold = self.config.volatility_percent
+        is_volatile, reasons = self._evaluate_volatility_thresholds(metrics, threshold)
 
         # Check cooldown
         if self._is_in_volatility_cooldown(now_in_configured_timezone()):
             return volatility_info
 
-        # Evaluate thresholds
-        threshold = self.config.volatility_percent
-        is_volatile, reasons = self._evaluate_volatility_thresholds(metrics, threshold)
-
         # Send alert if volatile
         if is_volatile:
-            self._send_volatility_alert(current_price, metrics, reasons)
+            self._send_volatility_alert(current_price, reasons)
 
         return volatility_info
 
@@ -380,15 +425,17 @@ class PriceMonitor:
         current_time = now_in_configured_timezone()
 
         # Add compact rolling data for current window calculations
-        self.volume_history.append({
-            "price": current_price,
-            "volume": volume,
-            "timestamp": current_time
-        })
+        self.volume_history.append(
+            VolumeData(
+                price=current_price,
+                volume=volume,
+                timestamp=current_time,
+            )
+        )
 
         # Remove old data outside the effective volume window.
         cutoff_time = current_time - timedelta(seconds=self.volume_window_seconds)
-        while self.volume_history and self.volume_history[0]["timestamp"] < cutoff_time:
+        while self.volume_history and self.volume_history[0].timestamp < cutoff_time:
             self.volume_history.popleft()
 
         # Need minimum data points for meaningful comparison
@@ -396,7 +443,7 @@ class PriceMonitor:
             return None
 
         # Extract volumes
-        volumes = [v["volume"] for v in self.volume_history]
+        volumes = [entry.volume for entry in self.volume_history]
 
         # Calculate baseline (average of previous data points, excluding most recent)
         # This avoids including the potential anomaly in the baseline
@@ -426,7 +473,7 @@ class PriceMonitor:
             coin = get_coin_display_name(self.config.symbol)
 
             # Determine price direction (use first price in current window)
-            first_price = self.volume_history[0]["price"]
+            first_price = self.volume_history[0].price
             price_change = current_price - first_price
             price_change_pct = (price_change / first_price) * 100 if first_price > 0 else 0
             direction = "📈" if price_change > 0 else "📉"
@@ -465,7 +512,8 @@ class PriceMonitor:
             price_diff = abs(current_price - self.last_processed_price)
             # For prices >= $1, minimum change is $0.001
             # For prices < $1, minimum change is $0.0001
-            min_change = 0.001 if current_price >= 1 else 0.0001
+            base_min_change = 0.001 if current_price >= 1 else 0.0001
+            min_change = min(base_min_change, self.config.integer_threshold)
 
             if price_diff < min_change:
                 # Price hasn't changed enough to matter
@@ -912,7 +960,7 @@ def show_status():
             try:
                 price = fetcher.get_current_price(coin_config.symbol)
                 if price:
-                    threshold_str = f"${int(coin_config.integer_threshold):,}" if coin_config.integer_threshold >= 1 else f"${coin_config.integer_threshold}"
+                    threshold_str = format_threshold(coin_config.integer_threshold)
                     emoji = get_coin_emoji(coin_config.coin_name)
 
                     print(f"{emoji} 🪙 {coin_config.coin_name}")
@@ -929,6 +977,8 @@ def show_status():
 
 def main():
     """Main entry point"""
+    load_environment()
+
     # Setup logging
     setup_logging()
 

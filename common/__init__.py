@@ -11,7 +11,7 @@ This module is organized into submodules for better maintainability:
 """
 
 # Config
-from .config import ConfigManager, CoinConfig
+from .config import ConfigManager, CoinConfig, load_environment
 
 # Logging
 from .logging import setup_logging, logger, get_logger
@@ -26,6 +26,7 @@ from .notifications import TelegramNotifier
 # Utils
 from .utils import (
     format_price,
+    format_threshold,
     get_coin_emoji,
     get_coin_display_name,
     get_configured_timezone,
@@ -38,6 +39,7 @@ __all__ = [
     # Config
     'ConfigManager',
     'CoinConfig',
+    'load_environment',
     # Logging
     'setup_logging',
     'logger',
@@ -52,6 +54,7 @@ __all__ = [
     'TelegramNotifier',
     # Utils
     'format_price',
+    'format_threshold',
     'get_coin_emoji',
     'get_coin_display_name',
     'get_configured_timezone',

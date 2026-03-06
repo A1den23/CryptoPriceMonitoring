@@ -10,6 +10,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+_ENV_LOADED = False
+_ENV_PATH = Path(__file__).parent.parent / ".env"
+
+
+def load_environment() -> None:
+    """Load environment variables from the project .env file once."""
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    if _ENV_PATH.exists():
+        load_dotenv(dotenv_path=_ENV_PATH, override=False)
+    _ENV_LOADED = True
+
+
 def _safe_int_env(
     name: str,
     default: int,
@@ -117,7 +131,10 @@ class CoinConfig:
         )
 
     def __str__(self) -> str:
-        threshold_str = f"{int(self.integer_threshold):,}" if self.integer_threshold >= 1 else f"{self.integer_threshold}"
+        if self.integer_threshold >= 1 and self.integer_threshold.is_integer():
+            threshold_str = f"{int(self.integer_threshold):,}"
+        else:
+            threshold_str = f"{self.integer_threshold}"
         return (
             f"{self.coin_name}: enabled={self.enabled}, symbol={self.symbol}, "
             f"integer_threshold={threshold_str}, "
@@ -130,11 +147,7 @@ class ConfigManager:
     """Centralized configuration management."""
 
     def __init__(self) -> None:
-        # Load environment variables from .env file if it exists
-        # (only if not already set in environment)
-        env_path = Path(__file__).parent.parent / '.env'
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
+        load_environment()
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")

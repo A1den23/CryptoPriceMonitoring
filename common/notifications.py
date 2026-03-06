@@ -3,6 +3,7 @@ Telegram notification utilities
 """
 
 import os
+import threading
 import time
 from collections import deque
 
@@ -23,6 +24,7 @@ class TelegramNotifier:
         self._message_times: deque[float] = deque()
         self._rate_limit = 20  # messages
         self._rate_window = 60  # seconds
+        self._rate_limit_lock = threading.Lock()
 
         # Validate token and construct URL only if configured
         if not self.bot_token or not self.chat_id:
@@ -31,15 +33,28 @@ class TelegramNotifier:
         else:
             self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
-    def _check_rate_limit(self) -> bool:
-        """Check if we're within rate limits."""
-        now = time.time()
-
-        # Remove old entries outside window
+    def _prune_rate_limit_window(self, now: float) -> None:
+        """Remove expired rate limit entries."""
         while self._message_times and self._message_times[0] < now - self._rate_window:
             self._message_times.popleft()
 
-        return len(self._message_times) < self._rate_limit
+    def _reserve_rate_limit_slot(self) -> float | None:
+        """Reserve a send slot atomically so concurrent sends honor the limit."""
+        now = time.time()
+        with self._rate_limit_lock:
+            self._prune_rate_limit_window(now)
+            if len(self._message_times) >= self._rate_limit:
+                return None
+            self._message_times.append(now)
+            return now
+
+    def _release_rate_limit_slot(self, reserved_at: float) -> None:
+        """Release a reserved slot when the request fails."""
+        with self._rate_limit_lock:
+            try:
+                self._message_times.remove(reserved_at)
+            except ValueError:
+                pass
 
     @retry(
         stop=stop_after_attempt(3),
@@ -54,7 +69,8 @@ class TelegramNotifier:
             return False
 
         # Check rate limit
-        if not self._check_rate_limit():
+        reserved_at = self._reserve_rate_limit_slot()
+        if reserved_at is None:
             logger.warning("Telegram rate limit exceeded, dropping message")
             return False
 
@@ -64,12 +80,13 @@ class TelegramNotifier:
             "text": message,
             "parse_mode": "HTML",
         }
-        response = requests.post(url, json=data, timeout=10)
-        response.raise_for_status()
+        try:
+            response = requests.post(url, json=data, timeout=10)
+            response.raise_for_status()
+        except Exception:
+            self._release_rate_limit_slot(reserved_at)
+            raise
         logger.info("Telegram message sent successfully")
-
-        # Track message time for rate limiting
-        self._message_times.append(time.time())
         return True
 
     def test_connection(self) -> bool:
