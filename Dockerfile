@@ -30,6 +30,11 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Set working directory
 WORKDIR /app
 
+# Install runtime timezone data so ZoneInfo handles DST correctly
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy Python dependencies from builder to system location
 COPY --from=builder /install /usr/local/lib/python3.11/site-packages
 
