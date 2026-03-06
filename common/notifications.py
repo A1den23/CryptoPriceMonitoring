@@ -16,9 +16,19 @@ from .logging import logger
 class TelegramNotifier:
     """Handle Telegram notifications with retry mechanism and rate limiting."""
 
+    API_ORIGIN = "https://api.telegram.org"
+
     def __init__(self, bot_token: str | None = None, chat_id: str | None = None) -> None:
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=5,
+            pool_maxsize=10,
+            max_retries=0,
+        )
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
         # Rate limiting: max 20 messages per minute (conservative)
         self._message_times: deque[float] = deque()
@@ -26,12 +36,17 @@ class TelegramNotifier:
         self._rate_window = 60  # seconds
         self._rate_limit_lock = threading.Lock()
 
-        # Validate token and construct URL only if configured
         if not self.bot_token or not self.chat_id:
             logger.warning("Telegram bot_token or chat_id not configured")
-            self.base_url: str | None = None
-        else:
-            self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
+
+    def __repr__(self) -> str:
+        """Avoid exposing credentials in debug output."""
+        token_preview = "***" if self.bot_token else None
+        return f"TelegramNotifier(bot_token={token_preview}, chat_id={self.chat_id!r})"
+
+    def _build_api_url(self, method: str) -> str:
+        """Build a Telegram Bot API URL without storing tokenized URLs on the instance."""
+        return f"{self.API_ORIGIN}/bot{self.bot_token}/{method}"
 
     def _prune_rate_limit_window(self, now: float) -> None:
         """Remove expired rate limit entries."""
@@ -74,14 +89,14 @@ class TelegramNotifier:
             logger.warning("Telegram rate limit exceeded, dropping message")
             return False
 
-        url = f"{self.base_url}/sendMessage"
+        url = self._build_api_url("sendMessage")
         data = {
             "chat_id": self.chat_id,
             "text": message,
             "parse_mode": "HTML",
         }
         try:
-            response = requests.post(url, json=data, timeout=10)
+            response = self.session.post(url, json=data, timeout=10)
             response.raise_for_status()
         except Exception:
             self._release_rate_limit_slot(reserved_at)
@@ -89,12 +104,16 @@ class TelegramNotifier:
         logger.info("Telegram message sent successfully")
         return True
 
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
+        self.session.close()
+
     def test_connection(self) -> bool:
         """Test Telegram bot connection."""
         try:
             return self.send_message(
-                "🤖 <b>Crypto Price Monitoring Bot</b> is now active!\n\n"
-                "Monitoring multiple cryptocurrencies..."
+                "🤖 <b>加密货币价格监控机器人</b> 已启动！\n\n"
+                "正在监控多个加密货币价格..."
             )
         except Exception as e:
             logger.error(f"Telegram connection test failed: {e}")

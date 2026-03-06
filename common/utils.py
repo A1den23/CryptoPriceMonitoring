@@ -81,7 +81,7 @@ def format_threshold(threshold: float) -> str:
 
 def get_coin_display_name(symbol: str) -> str:
     """Get display name for coin symbol"""
-    return symbol.replace("USDT", "")
+    return symbol.removesuffix("USDT")
 
 
 def get_coin_emoji(coin_name: str) -> str:

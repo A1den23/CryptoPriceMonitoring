@@ -38,6 +38,8 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 ```bash
 python3 monitor.py
+# 或
+python3 -m monitor
 ```
 
 常用参数：
@@ -46,13 +48,24 @@ python3 monitor.py
 python3 monitor.py --status
 python3 monitor.py --test
 python3 monitor.py --help
+# 或统一使用模块入口
+python3 -m monitor --status
+python3 -m monitor --test
+python3 -m monitor --help
 ```
 
 ### 4. 启动交互式 Bot
 
 ```bash
 python3 bot.py
+# 或
+python3 -m bot
 ```
+
+说明：
+
+- 顶层 `monitor.py` / `bot.py` 目前是兼容入口，便于保留现有启动方式
+- 主要实现已拆分到 `monitor/` 与 `bot/` 包中
 
 ## Docker 运行
 
@@ -192,27 +205,43 @@ docker compose exec crypto-bot bash
 
 ## 最近更新
 
-### v2.1 (2025-02)
+### 当前工作区变更（2026-03-06）
 
-- **类型注解现代化**：统一使用 Python 3.10+ 语法（`X | None`, `dict[str, X]`, `list[X]`）
-- **向后兼容**：保留 `get_logger()` 和 `UTC8` 常量，添加弃用警告平滑迁移
-- **安全加固**：
-  - Telegram Token 保护（未配置时不构造含 Token 的 URL）
-  - 路径遍历防护改进（多路径验证，防止符号链接攻击）
-- **异常处理**：`TelegramNotifier.test_connection()` 添加异常捕获
-- **代码质量**：统一的导入顺序、引号风格和文档字符串
-
-### v2.0 (2025-02)
-
-- **模块重构**：`common.py` 拆分为 `common/` 包，职责更清晰
-- **时区配置**：新增 `TIMEZONE` 环境变量，支持自定义时区
-- **WebSocket 优化**：可配置心跳间隔、超时时间
-- **Bot 增强**：添加心跳机制，支持模糊匹配命令
-- **安全修复**：路径遍历防护、输入验证增强
-- **信号处理**：修复信号竞争条件，支持优雅停机
+- **结构重构**：
+  - `monitor.py` 已拆分为 `monitor/` 包（`price_monitor.py`、`ws_monitor.py`、`__main__.py`）
+  - `bot.py` 已拆分为 `bot/` 包（`app.py`、`handlers.py`、`messages.py`、`__main__.py`）
+  - 顶层 `monitor.py` / `bot.py` 保留为兼容包装层，继续支持 `python monitor.py` / `python bot.py`
+- **运行入口**：
+  - 新增模块入口 `python -m monitor` 与 `python -m bot`
+  - Docker 仍兼容原有脚本入口
+- **稳定性修复**：
+  - 修复 WebSocket 消息分发中 `result/code` 分支不可达问题
+  - 修复里程碑通知在 `last_price is None` 时的防御性缺陷
+  - 修复 Telegram 按钮回调对 `price_<coin>` 的解析问题
+  - 调整 Telegram Bot 连接池参数，消除停机阶段的 `Pool timeout`
+- **通知与文案**：
+  - Telegram 用户可见消息统一为中文
+  - 内部日志统一为英文
+- **通知器改进**：
+  - `TelegramNotifier` 改为复用 `requests.Session()`
+  - 不再在实例属性中持久化带 token 的完整 URL
+- **部署改进**：
+  - Dockerfile 与 Compose 的健康检查统一为心跳文件策略
+  - 文档已同步到新的包结构和启动方式
 
 ```
 .
+├── monitor/                     # 监控包
+│   ├── __init__.py             # 对外导出与 CLI 入口
+│   ├── __main__.py             # 支持 `python -m monitor`
+│   ├── price_monitor.py        # PriceMonitor 与价格/波动/成交量逻辑
+│   └── ws_monitor.py           # WebSocketMultiCoinMonitor
+├── bot/                         # Telegram Bot 包
+│   ├── __init__.py             # 对外导出与 CLI 入口
+│   ├── __main__.py             # 支持 `python -m bot`
+│   ├── app.py                  # TelegramBot 生命周期与应用装配
+│   ├── handlers.py             # 命令与按钮回调
+│   └── messages.py             # 消息与按钮渲染
 ├── common/                      # 共享模块包
 │   ├── __init__.py             # 导出公共 API
 │   ├── config.py               # 配置管理 (ConfigManager, CoinConfig)
@@ -222,8 +251,8 @@ docker compose exec crypto-bot bash
 │   └── clients/
 │       ├── http.py             # HTTP API 客户端
 │       └── websocket.py        # WebSocket 客户端
-├── monitor.py                   # 实时监控与告警逻辑
-├── bot.py                       # Telegram 交互式 Bot
+├── monitor.py                   # 兼容入口（转发到 `monitor` 包）
+├── bot.py                       # 兼容入口（转发到 `bot` 包）
 ├── docker-compose.yml           # 容器编排
 ├── Dockerfile                   # 镜像构建
 └── requirements.txt             # Python 依赖

@@ -171,8 +171,16 @@ class BinanceWebSocketClient:
                     event_type = data.get("e")
                     inner_event = data.get("data", {}).get("e") if "stream" in data and "data" in data else None
 
+                    # Subscription confirmation
+                    if "result" in data:
+                        logger.info(f"Subscription confirmed: {data}")
+
+                    # Error message
+                    elif "code" in data:
+                        logger.error(f"Binance error: {data}")
+
                     # Ticker update
-                    if event_type == "24hrTicker" or inner_event == "24hrTicker":
+                    elif event_type == "24hrTicker" or inner_event == "24hrTicker":
                         symbol, price = self._parse_ticker_message(data)
 
                         # Update statistics
@@ -205,14 +213,6 @@ class BinanceWebSocketClient:
                                     pass
                                 except Exception:
                                     logger.exception("Error in kline callback")
-
-                        # Subscription confirmation
-                        elif "result" in data:
-                            logger.info(f"Subscription confirmed: {data}")
-
-                        # Error message
-                        elif "code" in data:
-                            logger.error(f"Binance error: {data}")
 
                 except json.JSONDecodeError as e:
                     logger.warning(f"Invalid JSON received: {e}")

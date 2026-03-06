@@ -25,14 +25,14 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-    # 健康检查 - 在精简镜像中通过 /proc/1/cmdline 校验主进程
+    # 健康检查 - 与 Dockerfile 保持一致，按主进程选择对应心跳文件
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import pathlib,time,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); h=pathlib.Path('/tmp/monitor_heartbeat'); ok=(b'monitor.py' in c and h.exists() and (time.time()-h.stat().st_mtime)<180); sys.exit(0 if ok else 1)"
+          "import pathlib,time,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); now=time.time(); ok=any(marker in c and (h:=pathlib.Path(path)).exists() and (now-h.stat().st_mtime)<180 for marker,path in ((b'monitor.py','/tmp/monitor_heartbeat'),(b'bot.py','/tmp/bot_heartbeat'))); sys.exit(0 if ok else 1)"
         ]
       interval: 30s
       timeout: 5s
@@ -72,14 +72,14 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-    # 健康检查 - 在精简镜像中通过 /proc/1/cmdline 校验主进程
+    # 健康检查 - 与 Dockerfile 保持一致，按主进程选择对应心跳文件
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import pathlib,time,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); h=pathlib.Path('/tmp/bot_heartbeat'); ok=(b'bot.py' in c and h.exists() and (time.time()-h.stat().st_mtime)<180); sys.exit(0 if ok else 1)"
+          "import pathlib,time,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); now=time.time(); ok=any(marker in c and (h:=pathlib.Path(path)).exists() and (now-h.stat().st_mtime)<180 for marker,path in ((b'monitor.py','/tmp/monitor_heartbeat'),(b'bot.py','/tmp/bot_heartbeat'))); sys.exit(0 if ok else 1)"
         ]
       interval: 30s
       timeout: 5s

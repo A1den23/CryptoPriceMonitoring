@@ -98,12 +98,15 @@ docker compose logs -f
 
 # 查看监控当前状态
 docker compose exec crypto-monitor python monitor.py --status
+# 等价写法
+docker compose exec crypto-monitor python -m monitor --status
 ```
 
 正常情况下：
 
 - `crypto-monitor` 日志包含 `WebSocket connected`
 - `crypto-bot` 日志包含 `Application started`
+- 顶层 `monitor.py` / `bot.py` 仍可用，但当前主要实现已分别拆分到 `monitor/` 和 `bot/` 包
 
 ## 4. 日常运维
 
@@ -218,4 +221,3 @@ docker compose restart
 - 设置 `.env` 权限：`chmod 600 .env`
 - 定期清理无用镜像：`docker image prune -f`
 - 使用外部监控系统观察容器重启次数与错误日志
-
