@@ -10,26 +10,8 @@ Usage:
 """
 
 import asyncio
+from importlib import import_module
 import sys
-
-from common import (
-    setup_logging,
-    ConfigManager,
-    load_environment,
-    BinancePriceFetcher,
-    BinanceWebSocketClient,
-    TelegramNotifier,
-    format_price,
-    format_threshold,
-    get_coin_display_name,
-    get_coin_emoji,
-    now_in_configured_timezone,
-    logger,
-)
-
-from . import price_monitor
-from .price_monitor import PriceMonitor
-from .ws_monitor import WebSocketMultiCoinMonitor
 
 __all__ = [
     "BinanceWebSocketClient",
@@ -52,9 +34,56 @@ __all__ = [
     "test_volatility_alert",
 ]
 
+_EXPORTS = {
+    "BinancePriceFetcher": ("common", "BinancePriceFetcher"),
+    "BinanceWebSocketClient": ("common", "BinanceWebSocketClient"),
+    "ConfigManager": ("common", "ConfigManager"),
+    "PriceMonitor": (".price_monitor", "PriceMonitor"),
+    "TelegramNotifier": ("common", "TelegramNotifier"),
+    "WebSocketMultiCoinMonitor": (".ws_monitor", "WebSocketMultiCoinMonitor"),
+    "format_price": ("common", "format_price"),
+    "format_threshold": ("common", "format_threshold"),
+    "get_coin_display_name": ("common", "get_coin_display_name"),
+    "get_coin_emoji": ("common", "get_coin_emoji"),
+    "load_environment": ("common", "load_environment"),
+    "logger": ("common", "logger"),
+    "now_in_configured_timezone": ("common", "now_in_configured_timezone"),
+    "price_monitor": (".price_monitor", None),
+    "setup_logging": ("common", "setup_logging"),
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    if module_name.startswith("."):
+        module = import_module(module_name, __name__)
+    else:
+        module = import_module(module_name)
+    value = module if attr_name is None else getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def _resolve_export(name: str):
+    if name in globals():
+        return globals()[name]
+    return __getattr__(name)
+
 
 def test_volatility_alert():
     """Test volatility monitoring by sending a test alert."""
+    BinancePriceFetcher = _resolve_export("BinancePriceFetcher")
+    ConfigManager = _resolve_export("ConfigManager")
+    TelegramNotifier = _resolve_export("TelegramNotifier")
+    format_price = _resolve_export("format_price")
+    get_coin_display_name = _resolve_export("get_coin_display_name")
+    now_in_configured_timezone = _resolve_export("now_in_configured_timezone")
+    logger = _resolve_export("logger")
+
     print("\n=== 测试波动监控 ===\n")
 
     config = ConfigManager()
@@ -96,6 +125,13 @@ def test_volatility_alert():
 
 def show_status():
     """Show current monitoring status."""
+    BinancePriceFetcher = _resolve_export("BinancePriceFetcher")
+    ConfigManager = _resolve_export("ConfigManager")
+    format_price = _resolve_export("format_price")
+    format_threshold = _resolve_export("format_threshold")
+    get_coin_emoji = _resolve_export("get_coin_emoji")
+    logger = _resolve_export("logger")
+
     print("\n" + "=" * 60)
     print("加密货币价格监控状态")
     print("=" * 60 + "\n")
@@ -125,6 +161,12 @@ def show_status():
 
 def main():
     """Main entry point."""
+    load_environment = _resolve_export("load_environment")
+    setup_logging = _resolve_export("setup_logging")
+    ConfigManager = _resolve_export("ConfigManager")
+    WebSocketMultiCoinMonitor = _resolve_export("WebSocketMultiCoinMonitor")
+    logger = _resolve_export("logger")
+
     load_environment()
     setup_logging()
 

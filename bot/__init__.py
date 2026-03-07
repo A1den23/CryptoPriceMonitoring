@@ -5,18 +5,8 @@ Provides interactive commands and buttons to query cryptocurrency prices
 """
 
 import asyncio
+from importlib import import_module
 import signal
-
-from common import (
-    setup_logging,
-    ConfigManager,
-    load_environment,
-    TelegramNotifier,
-    now_in_configured_timezone,
-    logger,
-)
-
-from .app import TelegramBot
 
 __all__ = [
     "ConfigManager",
@@ -31,9 +21,48 @@ __all__ = [
     "signal",
 ]
 
+_EXPORTS = {
+    "ConfigManager": ("common", "ConfigManager"),
+    "TelegramBot": (".app", "TelegramBot"),
+    "TelegramNotifier": ("common", "TelegramNotifier"),
+    "load_environment": ("common", "load_environment"),
+    "logger": ("common", "logger"),
+    "now_in_configured_timezone": ("common", "now_in_configured_timezone"),
+    "setup_logging": ("common", "setup_logging"),
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    if module_name.startswith("."):
+        module = import_module(module_name, __name__)
+    else:
+        module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def _resolve_export(name: str):
+    if name in globals():
+        return globals()[name]
+    return __getattr__(name)
+
 
 def main():
     """Main entry point."""
+    load_environment = _resolve_export("load_environment")
+    setup_logging = _resolve_export("setup_logging")
+    ConfigManager = _resolve_export("ConfigManager")
+    TelegramNotifier = _resolve_export("TelegramNotifier")
+    TelegramBot = _resolve_export("TelegramBot")
+    now_in_configured_timezone = _resolve_export("now_in_configured_timezone")
+    logger = _resolve_export("logger")
+
     load_environment()
     setup_logging(log_file="logs/bot.log")
 

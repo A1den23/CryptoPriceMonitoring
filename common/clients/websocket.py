@@ -126,28 +126,22 @@ class BinanceWebSocketClient:
     def _parse_kline_message(self, data: dict) -> tuple[str, float, float, bool] | None:
         """Parse Binance kline message."""
         try:
-            # Combined stream format
-            if "stream" in data and "data" in data:
-                inner_data = data["data"]
-                if inner_data.get("e") == "kline":
-                    kline = inner_data.get("k", {})
-                    return (
-                        kline.get("s"),
-                        float(kline.get("c", 0)),
-                        float(kline.get("v", 0)),
-                        kline.get("x", False)
-                    )
-            # Single stream format
-            elif data.get("e") == "kline":
-                kline = data.get("k", {})
-                return (
-                    kline.get("s"),
-                    float(kline.get("c", 0)),
-                    float(kline.get("v", 0)),
-                    kline.get("x", False)
-                )
+            event = data["data"] if "stream" in data and "data" in data else data
+            if event.get("e") != "kline":
+                return None
 
-            return None
+            kline = event["k"]
+            symbol = kline.get("s") or event.get("s")
+            if not isinstance(symbol, str) or not self._VALID_SYMBOL_PATTERN.match(symbol):
+                raise ValueError("Kline message missing valid symbol")
+
+            return (
+                symbol,
+                float(kline["c"]),
+                float(kline["v"]),
+                bool(kline["x"]),
+            )
+
         except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Failed to parse kline message: {e}")
             return None

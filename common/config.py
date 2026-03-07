@@ -7,7 +7,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs) -> bool:
+        """Fallback when python-dotenv is unavailable."""
+        return False
 
 
 _ENV_LOADED = False

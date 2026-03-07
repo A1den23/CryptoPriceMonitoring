@@ -67,6 +67,20 @@ python3 -m bot
 - 顶层 `monitor.py` / `bot.py` 目前是兼容入口，便于保留现有启动方式
 - 主要实现已拆分到 `monitor/` 与 `bot/` 包中
 
+### 5. 运行测试
+
+官方测试命令：
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+说明：
+
+- 该命令是当前仓库约定的稳定测试入口
+- `python3 -m unittest tests.test_regressions` 也可以运行相同回归测试
+- 包级导入已改为惰性加载，`python3 -m unittest` 在缺少可选三方库时也不会因导入阶段提前失败
+
 ## Docker 运行
 
 ```bash

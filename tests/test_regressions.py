@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -517,6 +518,27 @@ class TelegramNotifierRegressionTests(unittest.TestCase):
 
 
 class BinanceWebSocketClientRegressionTests(unittest.TestCase):
+    def test_message_handler_drops_closed_kline_with_missing_symbol(self) -> None:
+        async def on_price(symbol: str, price: float) -> None:
+            return None
+
+        on_kline = AsyncMock()
+
+        client = monitor.BinanceWebSocketClient(
+            ["BTCUSDT"],
+            on_price,
+            on_kline_callback=on_kline,
+        )
+        client.websocket = FakeAsyncIterableWebSocket(
+            ['{"e": "kline", "k": {"c": "1.23", "v": "4.56", "x": true}}']
+        )
+
+        with patch("common.clients.websocket.logger.error") as mock_error:
+            asyncio.run(client._message_handler())
+
+        on_kline.assert_not_awaited()
+        mock_error.assert_any_call("Failed to parse kline message: Kline message missing valid symbol")
+
     def test_message_handler_logs_subscription_confirmation_with_kline_callback(self) -> None:
         async def on_price(symbol: str, price: float) -> None:
             return None
@@ -620,6 +642,17 @@ class TelegramNotifierLocalizationTests(unittest.TestCase):
 
 
 class MainEntrypointRegressionTests(unittest.TestCase):
+    def test_package_imports_do_not_require_optional_dependencies(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", "import bot, common, monitor"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parents[1],
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
     def test_bot_main_continues_when_startup_notification_fails(self) -> None:
         state = {"ran": False}
 
