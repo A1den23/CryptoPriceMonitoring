@@ -211,6 +211,10 @@ class BinanceWebSocketClient:
                 except json.JSONDecodeError as e:
                     logger.warning(f"Invalid JSON received: {e}")
 
+            if not self._stop_event.is_set() and self.state == ConnectionState.CONNECTED:
+                logger.warning("WebSocket message stream ended cleanly")
+                self.state = ConnectionState.RECONNECTING
+                await self._trigger_disconnect_alert("Connection closed cleanly")
         except websockets.exceptions.ConnectionClosed as e:
             logger.warning(f"WebSocket connection closed: {e}")
             if not self._stop_event.is_set():

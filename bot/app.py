@@ -201,27 +201,36 @@ class TelegramBot:
 
         self.start_time = now_in_configured_timezone()
         heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        initialized = False
+        started = False
+        polling_started = False
 
-        async with AsyncBinancePriceFetcher() as fetcher:
-            self.fetcher = fetcher
-            await self.application.initialize()
-            await self.application.start()
-            await self.application.updater.start_polling(
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES,
-            )
-
-            try:
+        try:
+            async with AsyncBinancePriceFetcher() as fetcher:
+                self.fetcher = fetcher
+                await self.application.initialize()
+                initialized = True
+                await self.application.start()
+                started = True
+                await self.application.updater.start_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES,
+                )
+                polling_started = True
                 await self._shutdown_event.wait()
-            finally:
-                logger.info("Stopping Telegram Bot...")
-                heartbeat_task.cancel()
-                try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
+        finally:
+            logger.info("Stopping Telegram Bot...")
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+            if polling_started:
                 await self.application.updater.stop()
+            if started:
                 await self.application.stop()
+            if initialized:
                 await self.application.shutdown()
 
     def run(self):

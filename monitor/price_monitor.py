@@ -452,7 +452,10 @@ class PriceMonitor:
             output += " 🎯"
         if volatility_info:
             output += f" 📊{volatility_info}"
-        if self.latest_volume_info:
-            output += f" {self.latest_volume_info}"
+
+        volume_info = self.latest_volume_info
+        self.latest_volume_info = None
+        if volume_info:
+            output += f" {volume_info}"
 
         return output

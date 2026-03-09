@@ -216,7 +216,8 @@ _install_dependency_stubs()
 
 import bot
 import monitor
-from common.config import CoinConfig
+from common.clients.websocket import ConnectionState
+from common.config import CoinConfig, ConfigManager
 from common.notifications import TelegramNotifier
 from common.utils import format_threshold, get_coin_display_name
 from monitor import PriceMonitor
@@ -256,6 +257,38 @@ class FakeAsyncIterableWebSocket:
             return next(self._messages)
         except StopIteration as exc:
             raise StopAsyncIteration from exc
+
+
+class FakeHeartbeatTask:
+    def __init__(self) -> None:
+        self.cancel_called = False
+        self.awaited = False
+
+    def cancel(self) -> None:
+        self.cancel_called = True
+
+    def __await__(self):
+        async def _wait() -> None:
+            self.awaited = True
+            if self.cancel_called:
+                raise asyncio.CancelledError
+
+        return _wait().__await__()
+
+
+class FakeAsyncContextManager:
+    def __init__(self, value) -> None:
+        self.value = value
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self):
+        self.entered = True
+        return self.value
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.exited = True
+        return None
 
 
 class PriceMonitorRegressionTests(unittest.TestCase):
@@ -303,6 +336,19 @@ class PriceMonitorRegressionTests(unittest.TestCase):
     @staticmethod
     def _count_messages(notifier: StubNotifier, keyword: str) -> int:
         return sum(keyword in message for message in notifier.messages)
+
+    def test_latest_volume_info_is_consumed_once(self) -> None:
+        notifier = StubNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        price_monitor.latest_volume_info = "V:12.0x🚨"
+
+        first_output = price_monitor.check(100.0)
+        second_output = price_monitor.check(100.01)
+
+        self.assertIsNotNone(first_output)
+        self.assertIsNotNone(second_output)
+        self.assertIn("V:12.0x🚨", first_output)
+        self.assertNotIn("V:12.0x🚨", second_output)
 
     def test_threshold_formatting_keeps_fractional_steps(self) -> None:
         self.assertEqual(format_threshold(2.5), "$2.5")
@@ -518,6 +564,31 @@ class TelegramNotifierRegressionTests(unittest.TestCase):
 
 
 class BinanceWebSocketClientRegressionTests(unittest.TestCase):
+    def test_message_handler_transitions_to_reconnecting_when_stream_ends_cleanly(self) -> None:
+        async def on_price(symbol: str, price: float) -> None:
+            return None
+
+        client = monitor.BinanceWebSocketClient(["BTCUSDT"], on_price)
+        client.state = ConnectionState.CONNECTED
+        client.websocket = FakeAsyncIterableWebSocket([])
+
+        asyncio.run(client._message_handler())
+
+        self.assertEqual(client.state, ConnectionState.RECONNECTING)
+
+    def test_message_handler_keeps_stopped_state_when_stop_event_is_set_before_clean_end(self) -> None:
+        async def on_price(symbol: str, price: float) -> None:
+            return None
+
+        client = monitor.BinanceWebSocketClient(["BTCUSDT"], on_price)
+        client.state = ConnectionState.STOPPED
+        client._stop_event.set()
+        client.websocket = FakeAsyncIterableWebSocket([])
+
+        asyncio.run(client._message_handler())
+
+        self.assertEqual(client.state, ConnectionState.STOPPED)
+
     def test_message_handler_drops_closed_kline_with_missing_symbol(self) -> None:
         async def on_price(symbol: str, price: float) -> None:
             return None
@@ -579,6 +650,55 @@ class BinanceWebSocketClientRegressionTests(unittest.TestCase):
 
 
 class TelegramBotRegressionTests(unittest.TestCase):
+    def test_run_async_cleans_up_when_startup_fails(self) -> None:
+        config = types.SimpleNamespace(
+            telegram_bot_token="token",
+            get_enabled_coins=lambda: [],
+        )
+        fake_fetcher = object()
+        fetcher_context = FakeAsyncContextManager(fake_fetcher)
+        heartbeat_task = FakeHeartbeatTask()
+        allowed_updates = object()
+        application = types.SimpleNamespace(
+            initialize=AsyncMock(),
+            start=AsyncMock(),
+            stop=AsyncMock(),
+            shutdown=AsyncMock(),
+            updater=types.SimpleNamespace(
+                start_polling=AsyncMock(side_effect=RuntimeError("polling failed")),
+                stop=AsyncMock(),
+            ),
+        )
+
+        def fake_create_task(coro):
+            coro.close()
+            return heartbeat_task
+
+        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler), \
+             patch("bot.app.AsyncBinancePriceFetcher", return_value=fetcher_context), \
+             patch("bot.app.Update.ALL_TYPES", new=allowed_updates), \
+             patch("bot.app.asyncio.create_task", side_effect=fake_create_task):
+            telegram_bot = bot.TelegramBot(config)
+            telegram_bot.application = application
+
+            with self.assertRaisesRegex(RuntimeError, "polling failed"):
+                asyncio.run(telegram_bot.run_async())
+
+        self.assertIs(telegram_bot.fetcher, fake_fetcher)
+        self.assertTrue(fetcher_context.entered)
+        self.assertTrue(fetcher_context.exited)
+        self.assertTrue(heartbeat_task.cancel_called)
+        self.assertTrue(heartbeat_task.awaited)
+        application.initialize.assert_awaited_once_with()
+        application.start.assert_awaited_once_with()
+        application.updater.start_polling.assert_awaited_once_with(
+            drop_pending_updates=True,
+            allowed_updates=allowed_updates,
+        )
+        application.updater.stop.assert_not_awaited()
+        application.stop.assert_awaited_once_with()
+        application.shutdown.assert_awaited_once_with()
+
     def test_render_all_prices_message_is_localized_in_chinese(self) -> None:
         config = types.SimpleNamespace(
             telegram_bot_token="token",
@@ -639,6 +759,36 @@ class TelegramNotifierLocalizationTests(unittest.TestCase):
         self.assertIn("加密货币价格监控机器人", message)
         self.assertIn("正在监控多个加密货币价格", message)
         self.assertNotIn("Monitoring multiple cryptocurrencies", message)
+
+
+class EnvExampleRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _read_setting(file_path: Path, setting_name: str) -> str | None:
+        for raw_line in file_path.read_text().splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+
+            key, value = stripped.split("=", 1)
+            if key == setting_name:
+                return value.split("#", 1)[0].strip()
+
+        return None
+
+    def test_volume_alert_cooldown_default_matches_runtime_and_docs(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        env_default = self._read_setting(root / ".env.example", "VOLUME_ALERT_COOLDOWN_SECONDS")
+        readme_default = "| `VOLUME_ALERT_COOLDOWN_SECONDS` | 成交量告警冷却（秒） | 5 |"
+        deployment_default = self._read_setting(root / "DEPLOYMENT.md", "VOLUME_ALERT_COOLDOWN_SECONDS")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VOLUME_ALERT_COOLDOWN_SECONDS", None)
+            with patch("common.config.load_environment"):
+                runtime_default = ConfigManager().volume_alert_cooldown_seconds
+
+        self.assertEqual(env_default, str(runtime_default))
+        self.assertEqual(env_default, deployment_default)
+        self.assertIn(readme_default, (root / "README.md").read_text())
 
 
 class MainEntrypointRegressionTests(unittest.TestCase):
