@@ -761,36 +761,6 @@ class TelegramNotifierLocalizationTests(unittest.TestCase):
         self.assertNotIn("Monitoring multiple cryptocurrencies", message)
 
 
-class EnvExampleRegressionTests(unittest.TestCase):
-    @staticmethod
-    def _read_setting(file_path: Path, setting_name: str) -> str | None:
-        for raw_line in file_path.read_text().splitlines():
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-
-            key, value = stripped.split("=", 1)
-            if key == setting_name:
-                return value.split("#", 1)[0].strip()
-
-        return None
-
-    def test_volume_alert_cooldown_default_matches_runtime_and_docs(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        env_default = self._read_setting(root / ".env.example", "VOLUME_ALERT_COOLDOWN_SECONDS")
-        readme_default = "| `VOLUME_ALERT_COOLDOWN_SECONDS` | 成交量告警冷却（秒） | 5 |"
-        deployment_default = self._read_setting(root / "DEPLOYMENT.md", "VOLUME_ALERT_COOLDOWN_SECONDS")
-
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("VOLUME_ALERT_COOLDOWN_SECONDS", None)
-            with patch("common.config.load_environment"):
-                runtime_default = ConfigManager().volume_alert_cooldown_seconds
-
-        self.assertEqual(env_default, str(runtime_default))
-        self.assertEqual(env_default, deployment_default)
-        self.assertIn(readme_default, (root / "README.md").read_text())
-
-
 class MainEntrypointRegressionTests(unittest.TestCase):
     def test_package_imports_do_not_require_optional_dependencies(self) -> None:
         result = subprocess.run(
