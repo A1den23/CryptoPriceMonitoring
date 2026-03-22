@@ -515,6 +515,38 @@ class PriceMonitorRegressionTests(unittest.TestCase):
         self.assertEqual(self._count_messages(notifier, "波动警报"), 2)
 
 
+class ConfigManagerRegressionTests(unittest.TestCase):
+    def test_config_manager_reads_stablecoin_depeg_settings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "STABLECOIN_DEPEG_MONITOR_ENABLED": "true",
+                "STABLECOIN_DEPEG_TOP_N": "12",
+                "STABLECOIN_DEPEG_THRESHOLD_PERCENT": "7.5",
+                "STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS": "90",
+                "STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS": "1800",
+            },
+            clear=True,
+        ), patch("common.config.load_environment"):
+            config = ConfigManager()
+
+        self.assertTrue(config.stablecoin_depeg_monitor_enabled)
+        self.assertEqual(config.stablecoin_depeg_top_n, 12)
+        self.assertEqual(config.stablecoin_depeg_threshold_percent, 7.5)
+        self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 90)
+        self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 1800)
+
+    def test_config_manager_falls_back_to_stablecoin_depeg_defaults(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch("common.config.load_environment"):
+            config = ConfigManager()
+
+        self.assertFalse(config.stablecoin_depeg_monitor_enabled)
+        self.assertEqual(config.stablecoin_depeg_top_n, 20)
+        self.assertEqual(config.stablecoin_depeg_threshold_percent, 5.0)
+        self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 300)
+        self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 3600)
+
+
 class TelegramNotifierRegressionTests(unittest.TestCase):
     def test_send_message_uses_session_post_without_storing_base_url(self) -> None:
         notifier = TelegramNotifier(bot_token="token", chat_id="chat")
