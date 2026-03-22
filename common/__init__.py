@@ -27,6 +27,8 @@ __all__ = [
     "BinanceAPIError",
     "BinanceWebSocketClient",
     "ConnectionState",
+    "DefiLlamaClient",
+    "StablecoinSnapshot",
     # Notifications
     "TelegramNotifier",
     # Utils
@@ -55,6 +57,8 @@ _EXPORTS = {
     "BinanceAPIError": (".clients.http", "BinanceAPIError"),
     "BinanceWebSocketClient": (".clients.websocket", "BinanceWebSocketClient"),
     "ConnectionState": (".clients.websocket", "ConnectionState"),
+    "DefiLlamaClient": (".clients.defillama", "DefiLlamaClient"),
+    "StablecoinSnapshot": (".clients.defillama", "StablecoinSnapshot"),
     # Notifications
     "TelegramNotifier": (".notifications", "TelegramNotifier"),
     # Utils

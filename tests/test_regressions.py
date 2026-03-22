@@ -547,6 +547,134 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 3600)
 
 
+class DefiLlamaClientRegressionTests(unittest.TestCase):
+    def test_defillama_client_parses_top_stablecoins(self) -> None:
+        from common.clients.defillama import DefiLlamaClient, StablecoinSnapshot
+
+        payload = {
+            "peggedAssets": [
+                {"name": "USDC", "symbol": "USDC", "price": 0.943, "circulating": 1_000},
+                {"name": "USDT", "symbol": "USDT", "price": 1.0, "circulating": 2_000},
+                {"name": "DAI", "symbol": "DAI", "price": 0.998, "circulating": 500},
+            ]
+        }
+
+        client = DefiLlamaClient()
+        snapshots = client.parse_stablecoins(payload, top_n=2)
+
+        self.assertEqual(
+            snapshots,
+            [
+                StablecoinSnapshot(name="USDT", symbol="USDT", price=1.0, circulating=2000.0, rank=1),
+                StablecoinSnapshot(name="USDC", symbol="USDC", price=0.943, circulating=1000.0, rank=2),
+            ],
+        )
+
+    def test_defillama_client_skips_invalid_entries(self) -> None:
+        from common.clients.defillama import DefiLlamaClient
+
+        payload = {
+            "peggedAssets": [
+                {"name": "USDC", "symbol": "USDC", "price": 0.943, "circulating": 1_000},
+                {"name": None, "symbol": "BAD", "price": "oops", "circulating": 100},
+                {"name": "MISS", "price": 1.0, "circulating": 10},
+            ]
+        }
+
+        client = DefiLlamaClient()
+        snapshots = client.parse_stablecoins(payload, top_n=5)
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].symbol, "USDC")
+        self.assertEqual(snapshots[0].rank, 1)
+
+
+class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
+    def _build_stablecoin_monitor(self, notifier: StubNotifier, *, threshold_percent: float = 5.0, cooldown_seconds: int = 3600):
+        from monitor.stablecoin_depeg_monitor import StablecoinDepegMonitor
+
+        config = types.SimpleNamespace(
+            stablecoin_depeg_threshold_percent=threshold_percent,
+            stablecoin_depeg_alert_cooldown_seconds=cooldown_seconds,
+            stablecoin_depeg_top_n=20,
+            stablecoin_depeg_poll_interval_seconds=300,
+        )
+        return StablecoinDepegMonitor(config=config, notifier=notifier, client=object())
+
+    def test_stablecoin_monitor_does_not_alert_within_threshold(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = StubNotifier()
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier)
+
+        within_upper = StablecoinSnapshot("USDX", "USDX", 1.049, 1000.0, 1)
+        within_lower = StablecoinSnapshot("USDY", "USDY", 0.951, 900.0, 2)
+
+        self.assertFalse(stablecoin_monitor.evaluate_snapshot(within_upper))
+        self.assertFalse(stablecoin_monitor.evaluate_snapshot(within_lower))
+        self.assertEqual(notifier.messages, [])
+
+    def test_stablecoin_monitor_alerts_when_price_exceeds_upper_threshold(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = StubNotifier()
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier)
+
+        snapshot = StablecoinSnapshot("USDX", "USDX", 1.051, 1000.0, 1)
+
+        self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("USDX", notifier.messages[0])
+        self.assertIn("+5.10%", notifier.messages[0])
+
+    def test_stablecoin_monitor_alerts_when_price_exceeds_lower_threshold(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = StubNotifier()
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier)
+
+        snapshot = StablecoinSnapshot("USDX", "USDX", 0.949, 1000.0, 1)
+
+        self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("-5.10%", notifier.messages[0])
+
+    def test_stablecoin_monitor_respects_per_coin_cooldown(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = StubNotifier()
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier, cooldown_seconds=3600)
+        start_time = datetime(2026, 3, 22, tzinfo=timezone.utc)
+        clock = FakeClock(start_time)
+        snapshot = StablecoinSnapshot("USDX", "USDX", 0.949, 1000.0, 1)
+
+        with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now):
+            self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+            clock.current = start_time + timedelta(seconds=60)
+            self.assertFalse(stablecoin_monitor.evaluate_snapshot(snapshot))
+
+        self.assertEqual(len(notifier.messages), 1)
+
+    def test_stablecoin_monitor_resets_after_returning_to_normal(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = StubNotifier()
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier, cooldown_seconds=3600)
+        start_time = datetime(2026, 3, 22, tzinfo=timezone.utc)
+        clock = FakeClock(start_time)
+        depegged = StablecoinSnapshot("USDX", "USDX", 0.949, 1000.0, 1)
+        recovered = StablecoinSnapshot("USDX", "USDX", 1.0, 1000.0, 1)
+
+        with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now):
+            self.assertTrue(stablecoin_monitor.evaluate_snapshot(depegged))
+            clock.current = start_time + timedelta(seconds=60)
+            self.assertFalse(stablecoin_monitor.evaluate_snapshot(recovered))
+            clock.current = start_time + timedelta(seconds=120)
+            self.assertTrue(stablecoin_monitor.evaluate_snapshot(depegged))
+
+        self.assertEqual(len(notifier.messages), 2)
+
+
 class TelegramNotifierRegressionTests(unittest.TestCase):
     def test_send_message_uses_session_post_without_storing_base_url(self) -> None:
         notifier = TelegramNotifier(bot_token="token", chat_id="chat")
