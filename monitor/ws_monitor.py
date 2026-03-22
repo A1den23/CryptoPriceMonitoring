@@ -11,12 +11,14 @@ from pathlib import Path
 from common import (
     BinanceWebSocketClient,
     ConfigManager,
+    DefiLlamaClient,
     TelegramNotifier,
     now_in_configured_timezone,
     logger,
 )
 
 from .price_monitor import PriceMonitor
+from .stablecoin_depeg_monitor import StablecoinDepegMonitor
 
 
 class WebSocketMultiCoinMonitor:
@@ -35,6 +37,8 @@ class WebSocketMultiCoinMonitor:
         self._load_monitors()
 
         self.ws_client: BinanceWebSocketClient | None = None
+        self.stablecoin_client: DefiLlamaClient | None = None
+        self.stablecoin_monitor: StablecoinDepegMonitor | None = None
 
         self.last_print_time: datetime | None = None
         self.print_interval = 5
@@ -292,12 +296,26 @@ class WebSocketMultiCoinMonitor:
             max_reconnect_attempts=None,
         )
 
+        if self.config.stablecoin_depeg_monitor_enabled:
+            self.stablecoin_client = DefiLlamaClient()
+            self.stablecoin_monitor = StablecoinDepegMonitor(
+                config=self.config,
+                notifier=self.notifier,
+                client=self.stablecoin_client,
+            )
+
         try:
             ws_task = asyncio.create_task(self.ws_client.start())
             shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+            tasks = [ws_task, shutdown_task]
+            stablecoin_task = None
+
+            if self.stablecoin_monitor is not None:
+                stablecoin_task = asyncio.create_task(self.stablecoin_monitor.run())
+                tasks.append(stablecoin_task)
 
             done, pending = await asyncio.wait(
-                [ws_task, shutdown_task],
+                tasks,
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
@@ -307,6 +325,18 @@ class WebSocketMultiCoinMonitor:
                     await task
                 except asyncio.CancelledError:
                     pass
+
+            if stablecoin_task is not None and stablecoin_task in done:
+                try:
+                    stablecoin_task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception("Stablecoin depeg monitor task exited unexpectedly")
+                    raise
+                else:
+                    if not self._shutdown_event.is_set():
+                        raise RuntimeError("Stablecoin depeg monitor exited unexpectedly without a shutdown signal")
 
             if ws_task in done:
                 try:
@@ -335,6 +365,9 @@ class WebSocketMultiCoinMonitor:
             if self.ws_client:
                 await self.ws_client.stop()
             raise
+        finally:
+            if self.stablecoin_client and hasattr(self.stablecoin_client, "close"):
+                self.stablecoin_client.close()
 
     async def print_statistics(self):
         """Print WebSocket connection statistics."""

@@ -116,6 +116,11 @@ docker compose down
 | `WS_PONG_TIMEOUT_SECONDS` | WebSocket 心跳超时 | 10 |
 | `WS_MESSAGE_TIMEOUT_SECONDS` | WebSocket 消息超时（无数据断开） | 120 |
 | `BOT_HEARTBEAT_INTERVAL_SECONDS` | Bot 心跳文件更新间隔 | 30 |
+| `STABLECOIN_DEPEG_MONITOR_ENABLED` | 是否启用稳定币脱锚监控 | `false` |
+| `STABLECOIN_DEPEG_TOP_N` | 监控市值前 N 个稳定币 | `20` |
+| `STABLECOIN_DEPEG_THRESHOLD_PERCENT` | 偏离 $1 的告警阈值百分比 | `5.0` |
+| `STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS` | DefiLlama 轮询间隔（秒） | `300` |
+| `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` | 同一稳定币重复告警冷却（秒） | `3600` |
 
 ### 每个币种配置
 
@@ -177,6 +182,21 @@ BTC_VOLUME_ALERT_MULTIPLIER=10.0
 - 最新倍率 = 最新成交量 / 基线成交量
 - 当倍率 `>= {coin}_VOLUME_ALERT_MULTIPLIER` 触发告警
 - 受 `VOLUME_ALERT_COOLDOWN_SECONDS` 限制
+
+### 4) 稳定币脱锚告警
+
+触发条件：
+
+- 仅在 `STABLECOIN_DEPEG_MONITOR_ENABLED=true` 时启用
+- 从 DefiLlama 轮询市值前 `STABLECOIN_DEPEG_TOP_N` 个稳定币
+- 当价格高于 `1.05` 或低于 `0.95` 时触发告警
+- 同一稳定币在持续脱锚期间受 `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` 限制
+- 回到 `[0.95, 1.05]` 区间后清除脱锚状态
+
+说明：
+
+- 该功能独立于 `COIN_LIST`，启用时无需把稳定币加入 `COIN_LIST`
+- 修改上述环境变量后需要重启服务
 
 ## 常用运维命令
 
