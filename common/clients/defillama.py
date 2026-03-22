@@ -9,6 +9,9 @@ import requests
 from ..logging import logger
 
 
+EXCLUDED_STABLECOIN_SYMBOLS = {"USYC", "USDY"}
+
+
 @dataclass(frozen=True, slots=True)
 class StablecoinSnapshot:
     name: str
@@ -60,10 +63,14 @@ class DefiLlamaClient:
             except (TypeError, ValueError):
                 continue
 
+            parsed_symbol = str(symbol)
+            if parsed_symbol.upper() in EXCLUDED_STABLECOIN_SYMBOLS:
+                continue
+
             snapshots.append(
                 StablecoinSnapshot(
                     name=str(name),
-                    symbol=str(symbol),
+                    symbol=parsed_symbol,
                     price=parsed_price,
                     circulating=parsed_circulating,
                     rank=0,

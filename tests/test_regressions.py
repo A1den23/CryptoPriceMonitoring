@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -294,6 +295,28 @@ class FakeAsyncContextManager:
         return None
 
 
+class FakeStablecoinClient:
+    def __init__(self, *, snapshots=None, error: Exception | None = None) -> None:
+        self.snapshots = snapshots or []
+        self.error = error
+        self.calls: list[int] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def fetch_stablecoins(self, top_n: int):
+        self.calls.append(top_n)
+        if self.error is not None:
+            raise self.error
+        return self.snapshots[:top_n]
+
+
 class PriceMonitorRegressionTests(unittest.TestCase):
     @staticmethod
     def _build_price_monitor(
@@ -572,6 +595,25 @@ class DefiLlamaClientRegressionTests(unittest.TestCase):
                 StablecoinSnapshot(name="USDC", symbol="USDC", price=0.943, circulating=1000.0, rank=2),
             ],
         )
+
+    def test_defillama_client_excludes_usyc_and_usdy_before_top_n_ranking(self) -> None:
+        from common.clients.defillama import DefiLlamaClient
+
+        payload = {
+            "peggedAssets": [
+                {"name": "Circle USYC", "symbol": "USYC", "price": 1.02, "circulating": 5000},
+                {"name": "Ondo US Dollar Yield", "symbol": "USDY", "price": 1.01, "circulating": 4000},
+                {"name": "Tether", "symbol": "USDT", "price": 1.0, "circulating": 3000},
+                {"name": "USDC", "symbol": "USDC", "price": 1.0, "circulating": 2000},
+                {"name": "DAI", "symbol": "DAI", "price": 1.0, "circulating": 1000},
+            ]
+        }
+
+        client = DefiLlamaClient()
+        snapshots = client.parse_stablecoins(payload, top_n=3)
+
+        self.assertEqual([snapshot.symbol for snapshot in snapshots], ["USDT", "USDC", "DAI"])
+        self.assertEqual([snapshot.rank for snapshot in snapshots], [1, 2, 3])
 
     def test_defillama_client_skips_invalid_entries(self) -> None:
         from common.clients.defillama import DefiLlamaClient
@@ -1153,6 +1195,108 @@ class TelegramBotRegressionTests(unittest.TestCase):
         asyncio.run(telegram_bot.button_callback(update, None))
 
         telegram_bot.send_price_update.assert_awaited_once_with(123, "MY_COIN", message=None)
+
+
+class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _build_bot() -> bot.TelegramBot:
+        config = types.SimpleNamespace(
+            telegram_bot_token="token",
+            get_enabled_coins=lambda: [],
+        )
+
+        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler):
+            return bot.TelegramBot(config)
+
+    @staticmethod
+    def _build_update(chat_id: int = 123):
+        return types.SimpleNamespace(
+            effective_chat=types.SimpleNamespace(id=chat_id),
+            message=types.SimpleNamespace(chat_id=chat_id, reply_text=AsyncMock()),
+        )
+
+    @staticmethod
+    def _build_context():
+        return types.SimpleNamespace(args=[])
+
+    @staticmethod
+    def _build_snapshots():
+        from common.clients.defillama import StablecoinSnapshot
+
+        return [
+            StablecoinSnapshot("Tether", "USDT", 0.9987, 150_000_000_000.0, 1),
+            *[
+                StablecoinSnapshot(
+                    f"Stablecoin {rank}",
+                    f"USD{rank}",
+                    1.0 + rank / 10_000,
+                    1_000_000.0 - rank,
+                    rank,
+                )
+                for rank in range(2, 22)
+            ],
+        ]
+
+    def test_stablecoins_command_returns_formatted_top_20_list(self) -> None:
+        telegram_bot = self._build_bot()
+        telegram_bot._send_or_edit_message = AsyncMock()
+        update = self._build_update()
+        context = self._build_context()
+        stablecoin_client = FakeStablecoinClient(snapshots=self._build_snapshots())
+
+        self.assertTrue(
+            hasattr(telegram_bot, "stablecoins_command"),
+            "TelegramBot.stablecoins_command is not implemented yet",
+        )
+
+        with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
+            asyncio.run(telegram_bot.stablecoins_command(update, context))
+
+        self.assertEqual(stablecoin_client.calls, [20])
+        telegram_bot._send_or_edit_message.assert_awaited_once()
+        send_args = telegram_bot._send_or_edit_message.await_args.args
+        self.assertEqual(send_args[0], update.effective_chat.id)
+        sent_text = send_args[1]
+        self.assertIn("前20稳定币价格", sent_text)
+        self.assertIn("USDT", sent_text)
+        self.assertIn("Tether", sent_text)
+        self.assertRegex(sent_text, r"[+-]\d+\.\d+%")
+
+        ranks = [int(rank) for rank in re.findall(r"#(\d+)", sent_text)]
+        self.assertEqual(ranks, list(range(1, 21)))
+        self.assertNotIn("#21", sent_text)
+        self.assertNotIn("Stablecoin 21", sent_text)
+
+    def test_stablecoins_command_returns_error_message_when_fetch_fails(self) -> None:
+        telegram_bot = self._build_bot()
+        telegram_bot._send_or_edit_message = AsyncMock()
+        update = self._build_update()
+        context = self._build_context()
+        stablecoin_client = FakeStablecoinClient(error=RuntimeError("boom"))
+
+        self.assertTrue(
+            hasattr(telegram_bot, "stablecoins_command"),
+            "TelegramBot.stablecoins_command is not implemented yet",
+        )
+
+        with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
+            asyncio.run(telegram_bot.stablecoins_command(update, context))
+
+        self.assertEqual(stablecoin_client.calls, [20])
+        telegram_bot._send_or_edit_message.assert_awaited_once()
+        sent_text = telegram_bot._send_or_edit_message.await_args.args[1]
+        self.assertIn("稳定币价格", sent_text)
+        self.assertIn("前20稳定币价格失败", sent_text)
+
+    def test_help_message_mentions_stablecoins_command(self) -> None:
+        from bot.messages import render_help_message
+
+        self.assertIn("/stablecoins", render_help_message([]))
+
+    def test_welcome_message_mentions_stablecoins_command(self) -> None:
+        from bot.messages import render_welcome_message
+
+        self.assertIn("/stablecoins", render_welcome_message())
 
 
 class TelegramNotifierLocalizationTests(unittest.TestCase):

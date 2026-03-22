@@ -55,6 +55,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("price", self.price_command))
+        self.application.add_handler(CommandHandler("stablecoins", self.stablecoins_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("all", self.all_prices_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
@@ -247,6 +248,7 @@ TelegramBot._render_all_prices_message = messages._render_all_prices_message
 TelegramBot.start_command = handlers.start_command
 TelegramBot.help_command = handlers.help_command
 TelegramBot.price_command = handlers.price_command
+TelegramBot.stablecoins_command = handlers.stablecoins_command
 TelegramBot.status_command = handlers.status_command
 TelegramBot.all_prices_command = handlers.all_prices_command
 TelegramBot.button_callback = handlers.button_callback
