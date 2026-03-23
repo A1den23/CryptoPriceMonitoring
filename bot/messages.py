@@ -69,7 +69,7 @@ def render_stablecoin_prices_message(
     timestamp: str,
 ) -> str:
     """Build the stablecoin price list message."""
-    message = "🪙 <b>前20稳定币价格</b>\n\n"
+    message = "🪙 <b>前25稳定币价格</b>\n\n"
     if not stablecoins:
         return f"{message}❌ 暂无可用稳定币价格数据\n\n⏱️ {timestamp}"
 
@@ -90,7 +90,7 @@ def render_welcome_message() -> str:
         "欢迎使用！我可以帮助你查看和监控加密货币价格。\n\n"
         "📋 <b>可用命令：</b>\n"
         "/price - 查询指定币种价格\n"
-        "/stablecoins - 查看前20稳定币价格\n"
+        "/stablecoins - 查看前25稳定币价格\n"
         "/status - 查看所有监控币种状态\n"
         "/all - 查看所有已启用币种价格\n"
         "/help - 查看帮助说明\n\n"
@@ -105,7 +105,7 @@ def render_help_message(enabled_coins: list[CoinConfig]) -> str:
         "<b>命令：</b>\n"
         "/price [coin] - 查询指定币种价格\n"
         "  示例：/price BTC\n"
-        "/stablecoins - 查看前20稳定币价格\n"
+        "/stablecoins - 查看前25稳定币价格\n"
         "/status - 查看所有币种详细状态\n"
         "/all - 快速查看所有已启用币种价格\n"
         "/start - 显示欢迎菜单和快捷按钮\n\n"

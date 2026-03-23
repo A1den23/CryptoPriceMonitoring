@@ -106,12 +106,12 @@ async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAUL
     """Handle /stablecoins command."""
     try:
         async with DefiLlamaClient() as client:
-            stablecoins = await client.fetch_stablecoins(top_n=20)
+            stablecoins = await client.fetch_stablecoins(top_n=25)
         message = render_stablecoin_prices_message(stablecoins, self._format_timestamp())
         await self._send_or_edit_message(update.effective_chat.id, message)
     except Exception as exc:
         logger.error(f"Error fetching stablecoin prices: {exc}")
-        await self._send_or_edit_message(update.effective_chat.id, "❌ 获取前20稳定币价格失败")
+        await self._send_or_edit_message(update.effective_chat.id, "❌ 获取前25稳定币价格失败")
 
 
 async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

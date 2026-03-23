@@ -78,7 +78,7 @@ def main():
             "💬 <b>可用命令：</b>\n"
             "/start - 显示欢迎菜单\n"
             "/price [coin] - 查询指定币种价格\n"
-            "/stablecoins - 查看前20稳定币价格\n"
+            "/stablecoins - 查看前25稳定币价格\n"
             "/status - 查看详细状态\n"
             "/all - 查看全部价格\n"
             "/help - 查看帮助信息\n\n"
