@@ -4,7 +4,7 @@ DefiLlama client for stablecoin market snapshots.
 
 from dataclasses import dataclass
 
-import requests
+import aiohttp
 
 from ..logging import logger
 
@@ -27,16 +27,25 @@ class DefiLlamaClient:
     def __init__(self, base_url: str = "https://stablecoins.llama.fi", timeout: float = 10.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session: aiohttp.ClientSession | None = None
 
-    def close(self) -> None:
-        self.session.close()
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self.session is None:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        return self.session
 
-    def __enter__(self) -> "DefiLlamaClient":
+    async def close(self) -> None:
+        if self.session is not None:
+            await self.session.close()
+            self.session = None
+
+    async def __aenter__(self) -> "DefiLlamaClient":
+        await self._get_session()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
 
     def parse_stablecoins(self, payload: dict, top_n: int) -> list[StablecoinSnapshot]:
         pegged_assets = payload.get("peggedAssets")
@@ -57,9 +66,13 @@ class DefiLlamaClient:
             if not name or not symbol:
                 continue
 
+            circulating_value = circulating
+            if isinstance(circulating, dict):
+                circulating_value = circulating.get("peggedUSD")
+
             try:
                 parsed_price = float(price)
-                parsed_circulating = float(circulating)
+                parsed_circulating = float(circulating_value)
             except (TypeError, ValueError):
                 continue
 
@@ -90,8 +103,9 @@ class DefiLlamaClient:
         ]
         return ranked
 
-    def fetch_stablecoins(self, top_n: int) -> list[StablecoinSnapshot]:
-        response = self.session.get(f"{self.base_url}/stablecoins", timeout=self.timeout)
-        response.raise_for_status()
-        payload = response.json()
-        return self.parse_stablecoins(payload, top_n=top_n)
+    async def fetch_stablecoins(self, top_n: int) -> list[StablecoinSnapshot]:
+        session = await self._get_session()
+        async with session.get(f"{self.base_url}/stablecoins") as response:
+            response.raise_for_status()
+            payload = await response.json()
+            return self.parse_stablecoins(payload, top_n=top_n)

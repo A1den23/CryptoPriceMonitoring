@@ -189,13 +189,14 @@ BTC_VOLUME_ALERT_MULTIPLIER=10.0
 
 - 仅在 `STABLECOIN_DEPEG_MONITOR_ENABLED=true` 时启用
 - 从 DefiLlama 轮询市值前 `STABLECOIN_DEPEG_TOP_N` 个稳定币
-- 当价格高于 `1.05` 或低于 `0.95` 时触发告警
+- 默认在偏离 $1 达到 `±5%` 时触发告警，可通过 `STABLECOIN_DEPEG_THRESHOLD_PERCENT` 调整
 - 同一稳定币在持续脱锚期间受 `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` 限制
-- 回到 `[0.95, 1.05]` 区间后清除脱锚状态
+- 回到正常区间后清除脱锚状态（默认阈值下为 `[0.95, 1.05]`）
 
 说明：
 
 - 该功能独立于 `COIN_LIST`，启用时无需把稳定币加入 `COIN_LIST`
+- 默认 ±5%，实际阈值由 `STABLECOIN_DEPEG_THRESHOLD_PERCENT` 控制
 - 修改上述环境变量后需要重启服务
 
 ## 常用运维命令

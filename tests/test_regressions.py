@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import re
 import subprocess
@@ -633,6 +634,118 @@ class DefiLlamaClientRegressionTests(unittest.TestCase):
         self.assertEqual(snapshots[0].symbol, "USDC")
         self.assertEqual(snapshots[0].rank, 1)
 
+    def test_defillama_client_parses_circulating_dict_from_live_payload_shape(self) -> None:
+        from common.clients.defillama import DefiLlamaClient, StablecoinSnapshot
+
+        payload = {
+            "peggedAssets": [
+                {
+                    "name": "Tether",
+                    "symbol": "USDT",
+                    "price": 0.9999,
+                    "circulating": {"peggedUSD": 184189819394.69513},
+                },
+                {
+                    "name": "USDC",
+                    "symbol": "USDC",
+                    "price": 1.0001,
+                    "circulating": {"peggedUSD": 60123456789.0},
+                },
+            ]
+        }
+
+        client = DefiLlamaClient()
+        snapshots = client.parse_stablecoins(payload, top_n=2)
+
+        self.assertEqual(
+            snapshots,
+            [
+                StablecoinSnapshot(
+                    name="Tether",
+                    symbol="USDT",
+                    price=0.9999,
+                    circulating=184189819394.69513,
+                    rank=1,
+                ),
+                StablecoinSnapshot(
+                    name="USDC",
+                    symbol="USDC",
+                    price=1.0001,
+                    circulating=60123456789.0,
+                    rank=2,
+                ),
+            ],
+        )
+
+
+class DefiLlamaClientAsyncRegressionTests(unittest.TestCase):
+    def test_defillama_client_fetch_stablecoins_uses_async_session(self) -> None:
+        from common.clients.defillama import DefiLlamaClient, StablecoinSnapshot
+
+        payload = {
+            "peggedAssets": [
+                {"name": "USDC", "symbol": "USDC", "price": 0.999, "circulating": 1_500},
+                {"name": "USDT", "symbol": "USDT", "price": 1.0, "circulating": 2_000},
+                {"name": "DAI", "symbol": "DAI", "price": 1.001, "circulating": 500},
+            ]
+        }
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.raise_for_status = Mock()
+        response.json = AsyncMock(return_value=payload)
+        session = Mock()
+        session.get.return_value = response
+
+        client = DefiLlamaClient(timeout=7.5)
+        client.session = session
+
+        coroutine = client.fetch_stablecoins(top_n=2)
+        self.assertTrue(inspect.isawaitable(coroutine))
+
+        snapshots = asyncio.run(coroutine)
+
+        self.assertEqual(
+            snapshots,
+            [
+                StablecoinSnapshot(name="USDT", symbol="USDT", price=1.0, circulating=2000.0, rank=1),
+                StablecoinSnapshot(name="USDC", symbol="USDC", price=0.999, circulating=1500.0, rank=2),
+            ],
+        )
+        session.get.assert_called_once_with("https://stablecoins.llama.fi/stablecoins")
+        response.raise_for_status.assert_called_once_with()
+        response.json.assert_awaited_once_with()
+
+    def test_defillama_client_fetch_stablecoins_raises_on_invalid_payload(self) -> None:
+        from common.clients.defillama import DefiLlamaClient
+
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.raise_for_status = Mock()
+        response.json = AsyncMock(return_value={"oops": []})
+        session = Mock()
+        session.get.return_value = response
+
+        client = DefiLlamaClient()
+        client.session = session
+
+        with self.assertRaises(ValueError):
+            asyncio.run(client.fetch_stablecoins(top_n=3))
+
+        response.raise_for_status.assert_called_once_with()
+        response.json.assert_awaited_once_with()
+
+    def test_defillama_client_close_awaits_session_close(self) -> None:
+        from common.clients.defillama import DefiLlamaClient
+
+        session = AsyncMock()
+        client = DefiLlamaClient()
+        client.session = session
+
+        asyncio.run(client.close())
+
+        session.close.assert_awaited_once_with()
+        self.assertIsNone(client.session)
+
 
 class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
     def _build_stablecoin_monitor(self, notifier: StubNotifier, *, threshold_percent: float = 5.0, cooldown_seconds: int = 3600):
@@ -721,7 +834,7 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
 
 
 class StablecoinDepegMonitorPollingTests(unittest.TestCase):
-    def _build_stablecoin_monitor(self, notifier: StubNotifier, client, *, top_n: int = 2):
+    def _build_stablecoin_monitor(self, notifier, client, *, top_n: int = 2):
         from monitor.stablecoin_depeg_monitor import StablecoinDepegMonitor
 
         config = types.SimpleNamespace(
@@ -738,7 +851,7 @@ class StablecoinDepegMonitorPollingTests(unittest.TestCase):
         notifier = StubNotifier()
         calls = []
 
-        def fetch_stablecoins(top_n: int):
+        async def fetch_stablecoins(top_n: int):
             calls.append(top_n)
             snapshots = [
                 StablecoinSnapshot("USDT", "USDT", 1.0, 2000.0, 1),
@@ -750,7 +863,7 @@ class StablecoinDepegMonitorPollingTests(unittest.TestCase):
         client = types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins)
         stablecoin_monitor = self._build_stablecoin_monitor(notifier, client, top_n=2)
 
-        alerts = stablecoin_monitor.run_once()
+        alerts = asyncio.run(stablecoin_monitor.run_once())
 
         self.assertEqual(calls, [2])
         self.assertEqual(alerts, 1)
@@ -761,7 +874,7 @@ class StablecoinDepegMonitorPollingTests(unittest.TestCase):
         notifier = StubNotifier()
         calls = []
 
-        def fetch_stablecoins(top_n: int):
+        async def fetch_stablecoins(top_n: int):
             calls.append(top_n)
             if len(calls) == 1:
                 raise RuntimeError("boom")
@@ -782,6 +895,114 @@ class StablecoinDepegMonitorPollingTests(unittest.TestCase):
         self.assertEqual(calls, [2, 2])
         self.assertEqual(notifier.messages, [])
         mock_error.assert_called_once()
+
+
+class StablecoinDepegMonitorAsyncPollingTests(unittest.TestCase):
+    def _build_stablecoin_monitor(self, notifier, client, *, top_n: int = 2):
+        from monitor.stablecoin_depeg_monitor import StablecoinDepegMonitor
+
+        config = types.SimpleNamespace(
+            stablecoin_depeg_threshold_percent=5.0,
+            stablecoin_depeg_alert_cooldown_seconds=3600,
+            stablecoin_depeg_top_n=top_n,
+            stablecoin_depeg_poll_interval_seconds=300,
+        )
+        return StablecoinDepegMonitor(config=config, notifier=notifier, client=client)
+
+    def test_stablecoin_monitor_run_once_awaits_async_client_and_sends_alerts(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
+        client_calls = []
+
+        async def fetch_stablecoins(top_n: int):
+            client_calls.append(top_n)
+            return [StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 1)]
+
+        stablecoin_monitor = self._build_stablecoin_monitor(
+            notifier,
+            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+        )
+
+        with patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
+            async def invoke(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            mock_to_thread.side_effect = invoke
+            alerts = asyncio.run(stablecoin_monitor.run_once())
+
+        self.assertEqual(client_calls, [2])
+        self.assertEqual(alerts, 1)
+        mock_to_thread.assert_awaited_once()
+        notifier.send_message.assert_called_once()
+
+    def test_stablecoin_monitor_run_continues_after_failed_async_poll(self) -> None:
+        notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
+        calls = []
+
+        async def fetch_stablecoins(top_n: int):
+            calls.append(top_n)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            return []
+
+        async def fake_sleep(seconds: int) -> None:
+            if len(calls) >= 2:
+                raise asyncio.CancelledError
+
+        stablecoin_monitor = self._build_stablecoin_monitor(
+            notifier,
+            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+        )
+
+        with patch("monitor.stablecoin_depeg_monitor.asyncio.sleep", side_effect=fake_sleep), \
+             patch("monitor.stablecoin_depeg_monitor.logger.error") as mock_error:
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(stablecoin_monitor.run())
+
+        self.assertEqual(calls, [2, 2])
+        mock_error.assert_called_once()
+
+    def test_stablecoin_monitor_run_once_logs_successful_poll_summary(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
+
+        async def fetch_stablecoins(top_n: int):
+            return [
+                StablecoinSnapshot("USDT", "USDT", 1.0, 2000.0, 1),
+                StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 2),
+            ]
+
+        stablecoin_monitor = self._build_stablecoin_monitor(
+            notifier,
+            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+        )
+
+        with patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread, \
+             patch("monitor.stablecoin_depeg_monitor.logger.info") as mock_info:
+            async def invoke(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            mock_to_thread.side_effect = invoke
+            alerts = asyncio.run(stablecoin_monitor.run_once())
+
+        self.assertEqual(alerts, 1)
+        mock_info.assert_called_once_with("Stablecoin poll completed: snapshots=2, alerts=1")
+
+    def test_stablecoin_monitor_run_propagates_cancelled_error(self) -> None:
+        notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
+
+        async def fetch_stablecoins(top_n: int):
+            raise asyncio.CancelledError
+
+        stablecoin_monitor = self._build_stablecoin_monitor(
+            notifier,
+            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+        )
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(stablecoin_monitor.run_once())
 
 
 class FakeCompletedTask:
@@ -805,6 +1026,46 @@ class FakeCompletedTask:
 
 
 class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
+    def test_ws_monitor_awaits_stablecoin_client_close_in_finally(self) -> None:
+        stablecoin_client = AsyncMock()
+
+        class DummyWsClient:
+            async def start(self) -> None:
+                return None
+
+            async def stop(self) -> None:
+                return None
+
+        def fake_create_task(coro):
+            name = coro.cr_code.co_name
+            coro.close()
+            if name == "start":
+                return FakeCompletedTask()
+            if name == "wait":
+                return FakeCompletedTask()
+            return FakeCompletedTask()
+
+        with patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
+             patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=DummyWsClient()), \
+             patch("monitor.ws_monitor.DefiLlamaClient", return_value=stablecoin_client), \
+             patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
+             patch("monitor.ws_monitor.asyncio.wait", return_value=(set(), set())), \
+             patch("monitor.ws_monitor.StablecoinDepegMonitor") as mock_stablecoin_monitor_cls:
+            notifier = mock_notifier_cls.return_value
+            notifier.test_connection.return_value = True
+
+            async def run() -> None:
+                return None
+
+            mock_stablecoin_monitor_cls.return_value.run = run
+
+            from monitor.ws_monitor import WebSocketMultiCoinMonitor
+
+            ws_monitor = WebSocketMultiCoinMonitor(self._build_config(stablecoin_enabled=True))
+            asyncio.run(ws_monitor.run())
+
+        stablecoin_client.close.assert_awaited_once_with()
+
     def _build_config(self, *, stablecoin_enabled: bool):
         coin = CoinConfig(
             coin_name="BTC",
@@ -832,6 +1093,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
     def test_ws_monitor_starts_stablecoin_task_when_enabled(self) -> None:
         created_task_names = []
+        stablecoin_client = AsyncMock()
 
         def fake_create_task(coro):
             created_task_names.append(coro.cr_code.co_name)
@@ -847,6 +1109,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
         with patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=DummyWsClient()), \
+             patch("monitor.ws_monitor.DefiLlamaClient", return_value=stablecoin_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
              patch("monitor.ws_monitor.asyncio.wait", return_value=(set(), set())), \
              patch("monitor.ws_monitor.StablecoinDepegMonitor") as mock_stablecoin_monitor_cls:
@@ -865,6 +1128,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
         self.assertGreaterEqual(created_task_names.count("run"), 1)
         mock_stablecoin_monitor_cls.assert_called_once()
+        stablecoin_client.close.assert_awaited_once_with()
 
     def test_ws_monitor_does_not_start_stablecoin_task_when_disabled(self) -> None:
         created_task_names = []
@@ -883,6 +1147,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
         with patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=DummyWsClient()), \
+             patch("monitor.ws_monitor.DefiLlamaClient") as mock_defillama_client_cls, \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
              patch("monitor.ws_monitor.asyncio.wait", return_value=(set(), set())), \
              patch("monitor.ws_monitor.StablecoinDepegMonitor") as mock_stablecoin_monitor_cls:
@@ -896,6 +1161,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
         self.assertEqual(created_task_names.count("run"), 0)
         mock_stablecoin_monitor_cls.assert_not_called()
+        mock_defillama_client_cls.assert_not_called()
 
     def test_ws_monitor_cancels_stablecoin_task_on_shutdown(self) -> None:
         class FakeTask:
@@ -920,6 +1186,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
         stablecoin_task = FakeTask()
         shutdown_task = FakeHeartbeatTask()
         ws_task = FakeHeartbeatTask()
+        stablecoin_client = AsyncMock()
 
         def fake_create_task(coro):
             name = coro.cr_code.co_name
@@ -942,6 +1209,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
         with patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=DummyWsClient()), \
+             patch("monitor.ws_monitor.DefiLlamaClient", return_value=stablecoin_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
              patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task, stablecoin_task})), \
              patch("monitor.ws_monitor.StablecoinDepegMonitor") as mock_stablecoin_monitor_cls:
@@ -962,6 +1230,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
         self.assertTrue(stablecoin_task.cancel_called)
         self.assertTrue(stablecoin_task.awaited)
+        stablecoin_client.close.assert_awaited_once_with()
 
 
 class TelegramNotifierRegressionTests(unittest.TestCase):
@@ -1392,8 +1661,25 @@ class EnvExampleRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_DEPEG_MONITOR_ENABLED=", content)
         self.assertIn("STABLECOIN_DEPEG_TOP_N=20", content)
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
+        self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=60", content)
+        self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300", content)
+
+
+class StablecoinDocumentationRegressionTests(unittest.TestCase):
+    def test_deployment_doc_includes_stablecoin_depeg_settings(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text()
+
+        self.assertIn("STABLECOIN_DEPEG_MONITOR_ENABLED=", content)
+        self.assertIn("STABLECOIN_DEPEG_TOP_N=20", content)
+        self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
         self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=300", content)
         self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=3600", content)
+
+    def test_readme_describes_stablecoin_threshold_as_configurable(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+        self.assertIn("默认 ±5%", content)
+        self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT", content)
 
 
 class DockerRegressionTests(unittest.TestCase):

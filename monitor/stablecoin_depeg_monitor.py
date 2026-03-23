@@ -52,35 +52,49 @@ class StablecoinDepegMonitor:
             return True
         return (now - state.last_alert_time).total_seconds() >= self.cooldown_seconds
 
-    def evaluate_snapshot(self, snapshot: StablecoinSnapshot) -> bool:
+    def _build_alert_message(self, snapshot: StablecoinSnapshot) -> str | None:
         state = self._states.setdefault(snapshot.symbol, StablecoinAlertState())
         if not self._is_depegged(snapshot.price):
             state.is_depegged = False
-            return False
+            return None
 
         now = now_in_configured_timezone()
         if not self._should_alert(state, now):
             state.is_depegged = True
-            return False
+            return None
 
         deviation_percent = self._deviation_percent(snapshot.price)
-        self.notifier.send_message(self._format_alert_message(snapshot, deviation_percent, now))
+        message = self._format_alert_message(snapshot, deviation_percent, now)
         state.is_depegged = True
         state.last_alert_time = now
+        return message
+
+    def evaluate_snapshot(self, snapshot: StablecoinSnapshot) -> bool:
+        message = self._build_alert_message(snapshot)
+        if message is None:
+            return False
+        self.notifier.send_message(message)
         return True
 
-    def run_once(self) -> int:
-        snapshots = self.client.fetch_stablecoins(top_n=self.top_n)
+    async def _send_alert(self, message: str) -> bool:
+        return await asyncio.to_thread(self.notifier.send_message, message)
+
+    async def run_once(self) -> int:
+        snapshots = await self.client.fetch_stablecoins(top_n=self.top_n)
         alerts = 0
         for snapshot in snapshots:
-            if self.evaluate_snapshot(snapshot):
-                alerts += 1
+            message = self._build_alert_message(snapshot)
+            if message is None:
+                continue
+            await self._send_alert(message)
+            alerts += 1
+        logger.info(f"Stablecoin poll completed: snapshots={len(snapshots)}, alerts={alerts}")
         return alerts
 
     async def run(self) -> None:
         while True:
             try:
-                self.run_once()
+                await self.run_once()
             except Exception as exc:
                 logger.error(f"Stablecoin depeg poll failed: {exc}")
             await asyncio.sleep(self.poll_interval_seconds)

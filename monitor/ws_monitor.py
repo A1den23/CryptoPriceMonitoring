@@ -366,8 +366,8 @@ class WebSocketMultiCoinMonitor:
                 await self.ws_client.stop()
             raise
         finally:
-            if self.stablecoin_client and hasattr(self.stablecoin_client, "close"):
-                self.stablecoin_client.close()
+            if self.stablecoin_client is not None:
+                await self.stablecoin_client.close()
 
     async def print_statistics(self):
         """Print WebSocket connection statistics."""
