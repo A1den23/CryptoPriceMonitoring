@@ -2,6 +2,8 @@
 Telegram bot message rendering helpers.
 """
 
+from html import escape
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from common import CoinConfig, StablecoinSnapshot, format_price, get_coin_emoji
@@ -75,8 +77,10 @@ def render_stablecoin_prices_message(
 
     for snapshot in stablecoins:
         deviation_percent = (snapshot.price - 1.0) * 100
+        safe_symbol = escape(snapshot.symbol)
+        safe_name = escape(snapshot.name)
         message += (
-            f"#{snapshot.rank} <b>{snapshot.symbol}</b> ({snapshot.name})\n"
+            f"#{snapshot.rank} <b>{safe_symbol}</b> ({safe_name})\n"
             f"💰 ${snapshot.price:.4f} | 偏离 $1: {deviation_percent:+.2f}%\n"
         )
 

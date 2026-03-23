@@ -3,6 +3,7 @@ Stablecoin depeg monitoring logic.
 """
 
 import asyncio
+from html import escape
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -35,9 +36,11 @@ class StablecoinDepegMonitor:
         return price > (1 + self.threshold_percent / 100) or price < (1 - self.threshold_percent / 100)
 
     def _format_alert_message(self, snapshot: StablecoinSnapshot, deviation_percent: float, timestamp: datetime) -> str:
+        safe_symbol = escape(snapshot.symbol)
+        safe_name = escape(snapshot.name)
         return (
             f"🚨【稳定币脱锚警报】🚨\n"
-            f"🪙 {snapshot.symbol} ({snapshot.name})\n"
+            f"🪙 {safe_symbol} ({safe_name})\n"
             f"🏅 排名: #{snapshot.rank}\n"
             f"💰 当前价格: ${snapshot.price:.3f}\n"
             f"📉 偏离 $1: {deviation_percent:+.2f}%\n"

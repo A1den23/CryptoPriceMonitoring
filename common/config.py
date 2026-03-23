@@ -172,7 +172,7 @@ class ConfigManager:
         self.ws_message_timeout_seconds = _safe_float_env("WS_MESSAGE_TIMEOUT_SECONDS", 120.0, 1.0, 86400.0)
         self.stablecoin_depeg_monitor_enabled = os.getenv(
             "STABLECOIN_DEPEG_MONITOR_ENABLED",
-            "false",
+            "true",
         ).lower() == "true"
         self.stablecoin_depeg_top_n = _safe_int_env("STABLECOIN_DEPEG_TOP_N", 25, 1, 1000)
         self.stablecoin_depeg_threshold_percent = _safe_float_env(
@@ -183,13 +183,13 @@ class ConfigManager:
         )
         self.stablecoin_depeg_poll_interval_seconds = _safe_int_env(
             "STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS",
-            300,
+            60,
             1,
             86400,
         )
         self.stablecoin_depeg_alert_cooldown_seconds = _safe_int_env(
             "STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS",
-            3600,
+            300,
             0,
             604800,
         )

@@ -116,11 +116,11 @@ docker compose down
 | `WS_PONG_TIMEOUT_SECONDS` | WebSocket 心跳超时 | 10 |
 | `WS_MESSAGE_TIMEOUT_SECONDS` | WebSocket 消息超时（无数据断开） | 120 |
 | `BOT_HEARTBEAT_INTERVAL_SECONDS` | Bot 心跳文件更新间隔 | 30 |
-| `STABLECOIN_DEPEG_MONITOR_ENABLED` | 是否启用稳定币脱锚监控 | `false` |
+| `STABLECOIN_DEPEG_MONITOR_ENABLED` | 是否启用稳定币脱锚监控 | `true` |
 | `STABLECOIN_DEPEG_TOP_N` | 监控市值前 N 个稳定币 | `25` |
 | `STABLECOIN_DEPEG_THRESHOLD_PERCENT` | 偏离 $1 的告警阈值百分比 | `5.0` |
-| `STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS` | DefiLlama 轮询间隔（秒） | `300` |
-| `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` | 同一稳定币重复告警冷却（秒） | `3600` |
+| `STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS` | DefiLlama 轮询间隔（秒） | `60` |
+| `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` | 同一稳定币重复告警冷却（秒） | `300` |
 
 ### 每个币种配置
 

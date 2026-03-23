@@ -567,11 +567,11 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True), patch("common.config.load_environment"):
             config = ConfigManager()
 
-        self.assertFalse(config.stablecoin_depeg_monitor_enabled)
+        self.assertTrue(config.stablecoin_depeg_monitor_enabled)
         self.assertEqual(config.stablecoin_depeg_top_n, 25)
         self.assertEqual(config.stablecoin_depeg_threshold_percent, 5.0)
-        self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 300)
-        self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 3600)
+        self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 60)
+        self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 300)
 
 
 class DefiLlamaClientRegressionTests(unittest.TestCase):
@@ -796,6 +796,21 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
         self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
         self.assertEqual(len(notifier.messages), 1)
         self.assertIn("-5.10%", notifier.messages[0])
+
+    def test_stablecoin_monitor_escapes_html_special_characters_in_alert_message(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        notifier = StubNotifier()
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier)
+
+        snapshot = StablecoinSnapshot("USD <One> & Co", "USD<T>", 1.051, 1000.0, 1)
+
+        self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("USD &lt;One&gt; &amp; Co", notifier.messages[0])
+        self.assertIn("USD&lt;T&gt;", notifier.messages[0])
+        self.assertNotIn("USD <One> & Co", notifier.messages[0])
+        self.assertNotIn("USD<T>", notifier.messages[0])
 
     def test_stablecoin_monitor_respects_per_coin_cooldown(self) -> None:
         from common.clients.defillama import StablecoinSnapshot
@@ -1557,6 +1572,28 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
         self.assertIn("稳定币价格", sent_text)
         self.assertIn("前25稳定币价格失败", sent_text)
 
+    def test_stablecoins_command_escapes_html_special_characters(self) -> None:
+        from common.clients.defillama import StablecoinSnapshot
+
+        telegram_bot = self._build_bot()
+        telegram_bot._send_or_edit_message = AsyncMock()
+        update = self._build_update()
+        context = self._build_context()
+        stablecoin_client = FakeStablecoinClient(
+            snapshots=[
+                StablecoinSnapshot("USD <One> & Co", "USD<T>", 0.9987, 150_000_000_000.0, 1),
+            ]
+        )
+
+        with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
+            asyncio.run(telegram_bot.stablecoins_command(update, context))
+
+        sent_text = telegram_bot._send_or_edit_message.await_args.args[1]
+        self.assertIn("USD &lt;One&gt; &amp; Co", sent_text)
+        self.assertIn("USD&lt;T&gt;", sent_text)
+        self.assertNotIn("USD <One> & Co", sent_text)
+        self.assertNotIn("USD<T>", sent_text)
+
     def test_help_message_mentions_stablecoins_command(self) -> None:
         from bot.messages import render_help_message
 
@@ -1676,13 +1713,16 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_DEPEG_MONITOR_ENABLED=", content)
         self.assertIn("STABLECOIN_DEPEG_TOP_N=25", content)
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
-        self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=300", content)
-        self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=3600", content)
+        self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=60", content)
+        self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300", content)
 
     def test_readme_describes_stablecoin_threshold_as_configurable(self) -> None:
         content = (Path(__file__).resolve().parents[1] / "README.md").read_text()
 
+        self.assertIn("| `STABLECOIN_DEPEG_MONITOR_ENABLED` | 是否启用稳定币脱锚监控 | `true` |", content)
         self.assertIn("| `STABLECOIN_DEPEG_TOP_N` | 监控市值前 N 个稳定币 | `25` |", content)
+        self.assertIn("| `STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS` | DefiLlama 轮询间隔（秒） | `60` |", content)
+        self.assertIn("| `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` | 同一稳定币重复告警冷却（秒） | `300` |", content)
         self.assertIn("默认 ±5%", content)
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT", content)
 
