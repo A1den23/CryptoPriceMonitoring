@@ -4,7 +4,7 @@ Telegram bot message rendering helpers.
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from common import CoinConfig, format_price, get_coin_emoji
+from common import CoinConfig, StablecoinSnapshot, format_price, get_coin_emoji
 
 
 def _build_coin_button_rows(
@@ -64,6 +64,25 @@ def _render_all_prices_message(
     return f"{message}\n⏱️ {self._format_timestamp()}"
 
 
+def render_stablecoin_prices_message(
+    stablecoins: list[StablecoinSnapshot],
+    timestamp: str,
+) -> str:
+    """Build the stablecoin price list message."""
+    message = "🪙 <b>前20稳定币价格</b>\n\n"
+    if not stablecoins:
+        return f"{message}❌ 暂无可用稳定币价格数据\n\n⏱️ {timestamp}"
+
+    for snapshot in stablecoins:
+        deviation_percent = (snapshot.price - 1.0) * 100
+        message += (
+            f"#{snapshot.rank} <b>{snapshot.symbol}</b> ({snapshot.name})\n"
+            f"💰 ${snapshot.price:.4f} | 偏离 $1: {deviation_percent:+.2f}%\n"
+        )
+
+    return f"{message}\n⏱️ {timestamp}"
+
+
 def render_welcome_message() -> str:
     """Build the /start welcome message."""
     return (
@@ -71,6 +90,7 @@ def render_welcome_message() -> str:
         "欢迎使用！我可以帮助你查看和监控加密货币价格。\n\n"
         "📋 <b>可用命令：</b>\n"
         "/price - 查询指定币种价格\n"
+        "/stablecoins - 查看前20稳定币价格\n"
         "/status - 查看所有监控币种状态\n"
         "/all - 查看所有已启用币种价格\n"
         "/help - 查看帮助说明\n\n"
@@ -85,6 +105,7 @@ def render_help_message(enabled_coins: list[CoinConfig]) -> str:
         "<b>命令：</b>\n"
         "/price [coin] - 查询指定币种价格\n"
         "  示例：/price BTC\n"
+        "/stablecoins - 查看前20稳定币价格\n"
         "/status - 查看所有币种详细状态\n"
         "/all - 快速查看所有已启用币种价格\n"
         "/start - 显示欢迎菜单和快捷按钮\n\n"

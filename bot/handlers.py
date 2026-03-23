@@ -8,11 +8,12 @@ from difflib import get_close_matches
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from common import logger
+from common import DefiLlamaClient, logger
 
 from .messages import (
     render_help_message,
     render_price_update,
+    render_stablecoin_prices_message,
     render_status_message,
     render_welcome_message,
 )
@@ -99,6 +100,18 @@ async def all_prices_command(self, update: Update, context: ContextTypes.DEFAULT
     prices = await self._get_prices([c.symbol for c in enabled_coins])
     message = self._render_all_prices_message(enabled_coins, prices)
     await update.message.reply_text(message, parse_mode="HTML", disable_notification=False)
+
+
+async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /stablecoins command."""
+    try:
+        async with DefiLlamaClient() as client:
+            stablecoins = await client.fetch_stablecoins(top_n=20)
+        message = render_stablecoin_prices_message(stablecoins, self._format_timestamp())
+        await self._send_or_edit_message(update.effective_chat.id, message)
+    except Exception as exc:
+        logger.error(f"Error fetching stablecoin prices: {exc}")
+        await self._send_or_edit_message(update.effective_chat.id, "❌ 获取前20稳定币价格失败")
 
 
 async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
