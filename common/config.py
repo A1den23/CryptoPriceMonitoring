@@ -174,7 +174,7 @@ class ConfigManager:
             "STABLECOIN_DEPEG_MONITOR_ENABLED",
             "false",
         ).lower() == "true"
-        self.stablecoin_depeg_top_n = _safe_int_env("STABLECOIN_DEPEG_TOP_N", 20, 1, 1000)
+        self.stablecoin_depeg_top_n = _safe_int_env("STABLECOIN_DEPEG_TOP_N", 25, 1, 1000)
         self.stablecoin_depeg_threshold_percent = _safe_float_env(
             "STABLECOIN_DEPEG_THRESHOLD_PERCENT",
             5.0,

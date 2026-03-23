@@ -568,7 +568,7 @@ class ConfigManagerRegressionTests(unittest.TestCase):
             config = ConfigManager()
 
         self.assertFalse(config.stablecoin_depeg_monitor_enabled)
-        self.assertEqual(config.stablecoin_depeg_top_n, 20)
+        self.assertEqual(config.stablecoin_depeg_top_n, 25)
         self.assertEqual(config.stablecoin_depeg_threshold_percent, 5.0)
         self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 300)
         self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 3600)
@@ -754,7 +754,7 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
         config = types.SimpleNamespace(
             stablecoin_depeg_threshold_percent=threshold_percent,
             stablecoin_depeg_alert_cooldown_seconds=cooldown_seconds,
-            stablecoin_depeg_top_n=20,
+            stablecoin_depeg_top_n=25,
             stablecoin_depeg_poll_interval_seconds=300,
         )
         return StablecoinDepegMonitor(config=config, notifier=notifier, client=object())
@@ -1087,7 +1087,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
             stablecoin_depeg_monitor_enabled=stablecoin_enabled,
             stablecoin_depeg_threshold_percent=5.0,
             stablecoin_depeg_alert_cooldown_seconds=3600,
-            stablecoin_depeg_top_n=20,
+            stablecoin_depeg_top_n=25,
             stablecoin_depeg_poll_interval_seconds=300,
         )
 
@@ -1502,11 +1502,11 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
                     1_000_000.0 - rank,
                     rank,
                 )
-                for rank in range(2, 22)
+                for rank in range(2, 27)
             ],
         ]
 
-    def test_stablecoins_command_returns_formatted_top_20_list(self) -> None:
+    def test_stablecoins_command_returns_formatted_top_25_list(self) -> None:
         telegram_bot = self._build_bot()
         telegram_bot._send_or_edit_message = AsyncMock()
         update = self._build_update()
@@ -1521,20 +1521,20 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
         with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
-        self.assertEqual(stablecoin_client.calls, [20])
+        self.assertEqual(stablecoin_client.calls, [25])
         telegram_bot._send_or_edit_message.assert_awaited_once()
         send_args = telegram_bot._send_or_edit_message.await_args.args
         self.assertEqual(send_args[0], update.effective_chat.id)
         sent_text = send_args[1]
-        self.assertIn("前20稳定币价格", sent_text)
+        self.assertIn("前25稳定币价格", sent_text)
         self.assertIn("USDT", sent_text)
         self.assertIn("Tether", sent_text)
         self.assertRegex(sent_text, r"[+-]\d+\.\d+%")
 
         ranks = [int(rank) for rank in re.findall(r"#(\d+)", sent_text)]
-        self.assertEqual(ranks, list(range(1, 21)))
-        self.assertNotIn("#21", sent_text)
-        self.assertNotIn("Stablecoin 21", sent_text)
+        self.assertEqual(ranks, list(range(1, 26)))
+        self.assertNotIn("#26", sent_text)
+        self.assertNotIn("Stablecoin 26", sent_text)
 
     def test_stablecoins_command_returns_error_message_when_fetch_fails(self) -> None:
         telegram_bot = self._build_bot()
@@ -1551,21 +1551,25 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
         with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
-        self.assertEqual(stablecoin_client.calls, [20])
+        self.assertEqual(stablecoin_client.calls, [25])
         telegram_bot._send_or_edit_message.assert_awaited_once()
         sent_text = telegram_bot._send_or_edit_message.await_args.args[1]
         self.assertIn("稳定币价格", sent_text)
-        self.assertIn("前20稳定币价格失败", sent_text)
+        self.assertIn("前25稳定币价格失败", sent_text)
 
     def test_help_message_mentions_stablecoins_command(self) -> None:
         from bot.messages import render_help_message
 
-        self.assertIn("/stablecoins", render_help_message([]))
+        help_text = render_help_message([])
+        self.assertIn("/stablecoins", help_text)
+        self.assertIn("前25稳定币价格", help_text)
 
     def test_welcome_message_mentions_stablecoins_command(self) -> None:
         from bot.messages import render_welcome_message
 
-        self.assertIn("/stablecoins", render_welcome_message())
+        welcome_text = render_welcome_message()
+        self.assertIn("/stablecoins", welcome_text)
+        self.assertIn("前25稳定币价格", welcome_text)
 
 
 class TelegramNotifierLocalizationTests(unittest.TestCase):
@@ -1659,7 +1663,7 @@ class EnvExampleRegressionTests(unittest.TestCase):
         content = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
 
         self.assertIn("STABLECOIN_DEPEG_MONITOR_ENABLED=", content)
-        self.assertIn("STABLECOIN_DEPEG_TOP_N=20", content)
+        self.assertIn("STABLECOIN_DEPEG_TOP_N=25", content)
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
         self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=60", content)
         self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300", content)
@@ -1670,7 +1674,7 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text()
 
         self.assertIn("STABLECOIN_DEPEG_MONITOR_ENABLED=", content)
-        self.assertIn("STABLECOIN_DEPEG_TOP_N=20", content)
+        self.assertIn("STABLECOIN_DEPEG_TOP_N=25", content)
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
         self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=300", content)
         self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=3600", content)
@@ -1678,6 +1682,7 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
     def test_readme_describes_stablecoin_threshold_as_configurable(self) -> None:
         content = (Path(__file__).resolve().parents[1] / "README.md").read_text()
 
+        self.assertIn("| `STABLECOIN_DEPEG_TOP_N` | 监控市值前 N 个稳定币 | `25` |", content)
         self.assertIn("默认 ±5%", content)
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT", content)
 
