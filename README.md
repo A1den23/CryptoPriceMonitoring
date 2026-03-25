@@ -77,6 +77,12 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 - 文档中的本地测试示例统一以 `python3 -m unittest` 为准，不再额外约定 `pytest` 入口
 - `python3 -m unittest tests.test_regressions` 也可以运行相同回归测试
 - 包级导入已改为惰性加载，`python3 -m unittest` 在缺少可选三方库时也不会因导入阶段提前失败
+- 若 `.env` 已配置完成，建议同时补跑以下真实入口检查：
+
+```bash
+python3 -m monitor --status
+python3 -m bot
+```
 
 ## Docker 运行
 
@@ -237,7 +243,7 @@ docker compose exec crypto-bot bash
 
 ## 最近更新
 
-### 当前工作区变更（2026-03-06）
+### 当前工作区变更（2026-03-25）
 
 - **结构重构**：
   - `monitor.py` 已拆分为 `monitor/` 包（`price_monitor.py`、`ws_monitor.py`、`__main__.py`）
@@ -246,20 +252,28 @@ docker compose exec crypto-bot bash
 - **运行入口**：
   - 主入口统一为 `python -m monitor` 与 `python -m bot`
   - 顶层 `monitor.py` / `bot.py` 仅保留为兼容包装层
-- **稳定性修复**：
-  - 修复 WebSocket 消息分发中 `result/code` 分支不可达问题
-  - 修复里程碑通知在 `last_price is None` 时的防御性缺陷
-  - 修复 Telegram 按钮回调对 `price_<coin>` 的解析问题
-  - 调整 Telegram Bot 连接池参数，消除停机阶段的 `Pool timeout`
-- **通知与文案**：
-  - Telegram 用户可见消息统一为中文
-  - 内部日志统一为英文
-- **通知器改进**：
-  - `TelegramNotifier` 改为复用 `requests.Session()`
-  - 不再在实例属性中持久化带 token 的完整 URL
-- **部署改进**：
-  - Dockerfile 与 Compose 的健康检查统一为心跳文件策略
-  - 文档已同步到新的包结构和启动方式
+- **通知可靠性**：
+  - `TelegramNotifier` 现在要求 Telegram API 显式返回 `ok=true` 才视为发送成功
+  - 对 malformed JSON、缺少 `ok`、`ok=false` 的响应会明确返回失败，不再误判为成功
+  - `test_connection()` 不再把可能带 token 的异常文本写入日志
+- **告警状态语义**：
+  - `PriceMonitor` 的里程碑 / 波动 / 成交量告警状态只在发送成功后推进
+  - `StablecoinDepegMonitor` 的 `last_alert_time` 与 `alerts` 只在真实发送成功后更新
+- **生命周期与停机**：
+  - 优雅停机时会 drain 未完成的通知任务
+  - `WebSocketMultiCoinMonitor` 增强了取消安全 cleanup、信号注册/恢复和 ws 级通知任务管理
+- **结构收敛**：
+  - `TelegramBot` 已移除 monkey-patch 组装方式，改为显式方法包装
+  - `common` / `bot` / `monitor` 的包级导出已收敛，内部导入更显式
+- **日志与部署契约**：
+  - 文件日志已切换为轮转策略，避免无限增长
+  - `.dockerignore` 现已排除 `.venv/`
+  - Dockerfile、Compose、README、DEPLOYMENT 已统一到 `python -m monitor` / `python -m bot` 主入口
+- **验证结果**：
+  - `python3 -m unittest discover -s tests -p 'test_*.py'` 通过（93 tests）
+  - `python3 -m monitor --status` 已通过真实运行验证
+  - `python3 -m bot` 已通过真实启动 / 优雅停机验证
+  - `docker compose build` 已通过
 
 ```
 .

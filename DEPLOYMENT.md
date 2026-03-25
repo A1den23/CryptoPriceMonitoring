@@ -123,11 +123,24 @@ docker compose exec crypto-bot python -m bot --help
 - 容器主入口统一使用 `python -m monitor` / `python -m bot`
 - 顶层 `monitor.py` / `bot.py` 仍可用，但仅作为兼容包装层
 
-如需在宿主机做本地测试，当前稳定测试入口为：
+如需在宿主机做本地测试，当前推荐按以下顺序验证：
 
 ```bash
+# 1) 单元测试
 python3 -m unittest discover -s tests -p 'test_*.py'
+
+# 2) monitor 真实入口
+python3 -m monitor --status
+
+# 3) bot 真实入口
+python3 -m bot
 ```
+
+说明：
+
+- 如果 `.env` 已配置真实 Telegram 参数，`python3 -m bot` 应进入正常启动路径
+- 如果 Telegram 参数缺失，`python3 -m bot` 至少应给出清晰的配置错误，而不是导入阶段崩溃
+- 这三步已经用于本轮代码质量整改后的最终验证
 
 如需只做部署契约自检，请直接运行：
 
