@@ -58,6 +58,13 @@ python3 -m monitor --help
 python3 -m bot
 ```
 
+常用查询方式：
+
+```text
+/price - 弹出正在监控的币种选择器
+/price BTC - 直接查询 BTC 详情
+```
+
 说明：
 
 - 顶层 `monitor.py` / `bot.py` 仅保留为兼容包装层，不再作为文档中的主入口

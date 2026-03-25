@@ -116,6 +116,13 @@ docker compose exec crypto-monitor python -m monitor --status
 docker compose exec crypto-bot python -m bot --help
 ```
 
+Bot 查询说明：
+
+```text
+/price - 弹出正在监控的币种选择器
+/price BTC - 直接查询 BTC 详情
+```
+
 正常情况下：
 
 - `crypto-monitor` 日志包含 `WebSocket connected`
