@@ -101,8 +101,30 @@ class TelegramNotifier:
         except Exception:
             self._release_rate_limit_slot(reserved_at)
             raise
-        logger.info("Telegram message sent successfully")
-        return True
+
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.error("Telegram API returned malformed JSON")
+            return False
+
+        if not isinstance(payload, dict):
+            logger.error("Telegram API returned unexpected payload type: %s", type(payload).__name__)
+            return False
+
+        if payload.get("ok") is False:
+            logger.error(
+                "Telegram API rejected message: %s",
+                payload.get("description", "unknown error"),
+            )
+            return False
+
+        if payload.get("ok") is True:
+            logger.info("Telegram message sent successfully")
+            return True
+
+        logger.error("Telegram API response missing explicit ok=true")
+        return False
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -115,6 +137,6 @@ class TelegramNotifier:
                 "🤖 <b>加密货币价格监控机器人</b> 已启动！\n\n"
                 "正在监控多个加密货币价格..."
             )
-        except Exception as e:
-            logger.error(f"Telegram connection test failed: {e}")
+        except Exception:
+            logger.error("Telegram connection test failed")
             return False

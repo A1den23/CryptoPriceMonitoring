@@ -36,19 +36,15 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 ### 3. 启动监控
 
+主入口统一使用模块方式：
+
 ```bash
-python3 monitor.py
-# 或
 python3 -m monitor
 ```
 
 常用参数：
 
 ```bash
-python3 monitor.py --status
-python3 monitor.py --test
-python3 monitor.py --help
-# 或统一使用模块入口
 python3 -m monitor --status
 python3 -m monitor --test
 python3 -m monitor --help
@@ -56,15 +52,15 @@ python3 -m monitor --help
 
 ### 4. 启动交互式 Bot
 
+主入口统一使用模块方式：
+
 ```bash
-python3 bot.py
-# 或
 python3 -m bot
 ```
 
 说明：
 
-- 顶层 `monitor.py` / `bot.py` 目前是兼容入口，便于保留现有启动方式
+- 顶层 `monitor.py` / `bot.py` 仅保留为兼容包装层，不再作为文档中的主入口
 - 主要实现已拆分到 `monitor/` 与 `bot/` 包中
 
 ### 5. 运行测试
@@ -78,6 +74,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 说明：
 
 - 该命令是当前仓库约定的稳定测试入口
+- 文档中的本地测试示例统一以 `python3 -m unittest` 为准，不再额外约定 `pytest` 入口
 - `python3 -m unittest tests.test_regressions` 也可以运行相同回归测试
 - 包级导入已改为惰性加载，`python3 -m unittest` 在缺少可选三方库时也不会因导入阶段提前失败
 
@@ -247,8 +244,8 @@ docker compose exec crypto-bot bash
   - `bot.py` 已拆分为 `bot/` 包（`app.py`、`handlers.py`、`messages.py`、`__main__.py`）
   - 顶层 `monitor.py` / `bot.py` 保留为兼容包装层，继续支持 `python monitor.py` / `python bot.py`
 - **运行入口**：
-  - 新增模块入口 `python -m monitor` 与 `python -m bot`
-  - Docker 仍兼容原有脚本入口
+  - 主入口统一为 `python -m monitor` 与 `python -m bot`
+  - 顶层 `monitor.py` / `bot.py` 仅保留为兼容包装层
 - **稳定性修复**：
   - 修复 WebSocket 消息分发中 `result/code` 分支不可达问题
   - 修复里程碑通知在 `last_price is None` 时的防御性缺陷

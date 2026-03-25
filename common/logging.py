@@ -4,8 +4,13 @@ Logging utilities for Crypto Price Monitoring Bot
 
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Union
+
+
+DEFAULT_LOG_MAX_BYTES = 1_048_576
+DEFAULT_LOG_BACKUP_COUNT = 3
 
 
 def _resolve_log_level(level: Union[int, str, None]) -> int:
@@ -59,8 +64,14 @@ def setup_logging(
         # Create logs directory if it doesn't exist
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Add file handler
-        handlers.append(logging.FileHandler(str(log_path)))
+        # Add rotating file handler with conservative defaults
+        handlers.append(
+            RotatingFileHandler(
+                str(log_path),
+                maxBytes=DEFAULT_LOG_MAX_BYTES,
+                backupCount=DEFAULT_LOG_BACKUP_COUNT,
+            )
+        )
     except (PermissionError, OSError, ValueError) as e:
         # Fall back to console only if file logging fails
         print(f"Warning: Could not create log file '{log_file}': {e}")
@@ -72,6 +83,7 @@ def setup_logging(
         format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
         level=resolved_level,
         handlers=handlers,
+        force=True,
     )
 
     # Reduce sensitive/noisy logs (prevents Telegram bot token from appearing)

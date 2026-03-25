@@ -8,6 +8,14 @@ import asyncio
 from importlib import import_module
 import signal
 
+from common import (
+    ConfigManager,
+    load_environment,
+    logger,
+    now_in_configured_timezone,
+    setup_logging,
+)
+
 __all__ = [
     "ConfigManager",
     "TelegramBot",
@@ -21,20 +29,15 @@ __all__ = [
     "signal",
 ]
 
-_EXPORTS = {
-    "ConfigManager": ("common", "ConfigManager"),
+_LAZY_EXPORTS = {
     "TelegramBot": (".app", "TelegramBot"),
     "TelegramNotifier": ("common", "TelegramNotifier"),
-    "load_environment": ("common", "load_environment"),
-    "logger": ("common", "logger"),
-    "now_in_configured_timezone": ("common", "now_in_configured_timezone"),
-    "setup_logging": ("common", "setup_logging"),
 }
 
 
 def __getattr__(name: str):
     try:
-        module_name, attr_name = _EXPORTS[name]
+        module_name, attr_name = _LAZY_EXPORTS[name]
     except KeyError as exc:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
 
@@ -48,9 +51,10 @@ def __getattr__(name: str):
 
 
 def _resolve_export(name: str):
-    if name in globals():
+    try:
         return globals()[name]
-    return __getattr__(name)
+    except KeyError:
+        return __getattr__(name)
 
 
 def main():

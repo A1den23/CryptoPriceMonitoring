@@ -8,7 +8,8 @@ from difflib import get_close_matches
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from common import DefiLlamaClient, logger
+from common.clients.defillama import DefiLlamaClient
+from common.logging import logger
 
 from .messages import (
     render_help_message,

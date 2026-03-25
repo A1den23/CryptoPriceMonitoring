@@ -12,15 +12,11 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from common import (
-    AsyncBinancePriceFetcher,
-    CoinConfig,
-    ConfigManager,
-    TelegramNotifier,
-    format_threshold,
-    now_in_configured_timezone,
-    logger,
-)
+from common.clients.http import AsyncBinancePriceFetcher
+from common.config import CoinConfig, ConfigManager
+from common.logging import logger
+from common.notifications import TelegramNotifier
+from common.utils import format_threshold, now_in_configured_timezone
 
 from . import handlers, messages
 
@@ -195,18 +191,74 @@ class TelegramBot:
             disable_notification=False,
         )
 
+    def _build_coin_button_rows(
+        self,
+        exclude_coin: str | None = None,
+    ) -> list[list[InlineKeyboardButton]]:
+        """Build rows of enabled coin buttons."""
+        return messages._build_coin_button_rows(self, exclude_coin=exclude_coin)
+
+    def _build_start_keyboard(self) -> InlineKeyboardMarkup:
+        """Build the keyboard shown on /start."""
+        return messages._build_start_keyboard(self)
+
+    def _build_price_keyboard(self, coin_name: str) -> InlineKeyboardMarkup:
+        """Build the keyboard shown for a specific coin price update."""
+        return messages._build_price_keyboard(self, coin_name)
+
+    def _render_all_prices_message(
+        self,
+        enabled_coins: list[CoinConfig],
+        prices: dict[str, float | None],
+    ) -> str:
+        """Render the shared all-prices message body."""
+        return messages._render_all_prices_message(self, enabled_coins, prices)
+
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command."""
+        await handlers.start_command(self, update, context)
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command."""
+        await handlers.help_command(self, update, context)
+
+    async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /price command with input validation."""
+        await handlers.price_command(self, update, context)
+
+    async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /stablecoins command."""
+        await handlers.stablecoins_command(self, update, context)
+
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command."""
+        await handlers.status_command(self, update, context)
+
+    async def all_prices_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /all command."""
+        await handlers.all_prices_command(self, update, context)
+
+    async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline button callbacks."""
+        await handlers.button_callback(self, update, context)
+
+    async def send_price_update(self, chat_id, coin_name, message=None):
+        """Send a single-coin price update."""
+        await handlers.send_price_update(self, chat_id, coin_name, message=message)
+
     async def run_async(self):
         """Start the bot asynchronously."""
         logger.info("Starting Telegram Bot polling...")
-        self._touch_heartbeat()
-
-        self.start_time = now_in_configured_timezone()
-        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        heartbeat_task = None
         initialized = False
         started = False
         polling_started = False
 
         try:
+            self._touch_heartbeat()
+            self.start_time = now_in_configured_timezone()
+            heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
             async with AsyncBinancePriceFetcher() as fetcher:
                 self.fetcher = fetcher
                 await self.application.initialize()
@@ -221,17 +273,19 @@ class TelegramBot:
                 await self._shutdown_event.wait()
         finally:
             logger.info("Stopping Telegram Bot...")
-            heartbeat_task.cancel()
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
 
-            if polling_started:
-                await self.application.updater.stop()
-            if started:
+            updater = getattr(self.application, "updater", None)
+            if polling_started or getattr(updater, "running", False):
+                await updater.stop()
+            if started or getattr(self.application, "running", False):
                 await self.application.stop()
-            if initialized:
+            if initialized or getattr(self.application, "initialized", False):
                 await self.application.shutdown()
 
     def run(self):
@@ -239,17 +293,3 @@ class TelegramBot:
         logger.info("Starting Telegram Bot polling...")
         asyncio.run(self.run_async())
 
-
-TelegramBot._build_coin_button_rows = messages._build_coin_button_rows
-TelegramBot._build_start_keyboard = messages._build_start_keyboard
-TelegramBot._build_price_keyboard = messages._build_price_keyboard
-TelegramBot._render_all_prices_message = messages._render_all_prices_message
-
-TelegramBot.start_command = handlers.start_command
-TelegramBot.help_command = handlers.help_command
-TelegramBot.price_command = handlers.price_command
-TelegramBot.stablecoins_command = handlers.stablecoins_command
-TelegramBot.status_command = handlers.status_command
-TelegramBot.all_prices_command = handlers.all_prices_command
-TelegramBot.button_callback = handlers.button_callback
-TelegramBot.send_price_update = handlers.send_price_update

@@ -12,6 +12,19 @@ This module is organized into submodules for better maintainability:
 
 from importlib import import_module
 
+from .config import CoinConfig, ConfigManager, load_environment
+from .logging import get_logger, logger, setup_logging
+from .utils import (
+    TZ,
+    UTC8,
+    format_price,
+    format_threshold,
+    get_coin_display_name,
+    get_coin_emoji,
+    get_configured_timezone,
+    now_in_configured_timezone,
+)
+
 __all__ = [
     # Config
     "ConfigManager",
@@ -42,16 +55,7 @@ __all__ = [
     "UTC8",
 ]
 
-_EXPORTS = {
-    # Config
-    "ConfigManager": (".config", "ConfigManager"),
-    "CoinConfig": (".config", "CoinConfig"),
-    "load_environment": (".config", "load_environment"),
-    # Logging
-    "setup_logging": (".logging", "setup_logging"),
-    "logger": (".logging", "logger"),
-    "get_logger": (".logging", "get_logger"),
-    # Clients
+_LAZY_EXPORTS = {
     "BinancePriceFetcher": (".clients.http", "BinancePriceFetcher"),
     "AsyncBinancePriceFetcher": (".clients.http", "AsyncBinancePriceFetcher"),
     "BinanceAPIError": (".clients.http", "BinanceAPIError"),
@@ -59,24 +63,14 @@ _EXPORTS = {
     "ConnectionState": (".clients.websocket", "ConnectionState"),
     "DefiLlamaClient": (".clients.defillama", "DefiLlamaClient"),
     "StablecoinSnapshot": (".clients.defillama", "StablecoinSnapshot"),
-    # Notifications
     "TelegramNotifier": (".notifications", "TelegramNotifier"),
-    # Utils
-    "format_price": (".utils", "format_price"),
-    "format_threshold": (".utils", "format_threshold"),
-    "get_coin_emoji": (".utils", "get_coin_emoji"),
-    "get_coin_display_name": (".utils", "get_coin_display_name"),
-    "get_configured_timezone": (".utils", "get_configured_timezone"),
-    "now_in_configured_timezone": (".utils", "now_in_configured_timezone"),
-    "TZ": (".utils", "TZ"),
-    "UTC8": (".utils", "UTC8"),
 }
 
 
 def __getattr__(name: str):
-    """Lazily import public exports so package import stays lightweight."""
+    """Lazily import heavyweight public exports so package import stays lightweight."""
     try:
-        module_name, attr_name = _EXPORTS[name]
+        module_name, attr_name = _LAZY_EXPORTS[name]
     except KeyError as exc:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
 

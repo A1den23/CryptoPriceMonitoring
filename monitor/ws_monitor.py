@@ -8,14 +8,12 @@ import signal
 from datetime import datetime
 from pathlib import Path
 
-from common import (
-    BinanceWebSocketClient,
-    ConfigManager,
-    DefiLlamaClient,
-    TelegramNotifier,
-    now_in_configured_timezone,
-    logger,
-)
+from common.clients.defillama import DefiLlamaClient
+from common.clients.websocket import BinanceWebSocketClient
+from common.config import ConfigManager
+from common.logging import logger
+from common.notifications import TelegramNotifier
+from common.utils import now_in_configured_timezone
 
 from .price_monitor import PriceMonitor
 from .stablecoin_depeg_monitor import StablecoinDepegMonitor
@@ -46,9 +44,12 @@ class WebSocketMultiCoinMonitor:
         self._update_lock = asyncio.Lock()
 
         self._shutdown_event = asyncio.Event()
-        self._setup_signal_handlers()
+        self._original_sigint = None
+        self._original_sigterm = None
+        self._signal_handlers_registered = False
         self._disconnect_alert_time: datetime | None = None
         self._last_disconnect_reason: str | None = None
+        self._notification_tasks: set[asyncio.Task] = set()
 
         self._heartbeat_file = Path(os.getenv("MONITOR_HEARTBEAT_FILE", "/tmp/monitor_heartbeat"))
         self._last_heartbeat_touch: datetime | None = None
@@ -72,8 +73,11 @@ class WebSocketMultiCoinMonitor:
 
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
+        if self._signal_handlers_registered:
+            return
         self._original_sigint = signal.signal(signal.SIGINT, self._signal_handler)
         self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
+        self._signal_handlers_registered = True
         logger.debug("Signal handlers registered for SIGINT and SIGTERM")
 
     def _signal_handler(self, signum: int, frame) -> None:
@@ -82,7 +86,8 @@ class WebSocketMultiCoinMonitor:
         logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
 
         original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
-        self._restore_signal_handler(signum, original_handler)
+        if original_handler is not None:
+            self._restore_signal_handler(signum, original_handler)
         self._shutdown_event.set()
 
     @staticmethod
@@ -92,6 +97,18 @@ class WebSocketMultiCoinMonitor:
             signal.signal(signum, original_handler)
         except (ValueError, OSError):
             pass
+
+    def _restore_signal_handlers(self) -> None:
+        """Restore original signal handlers on monitor exit."""
+        if not self._signal_handlers_registered:
+            return
+        if self._original_sigint is not None:
+            self._restore_signal_handler(signal.SIGINT, self._original_sigint)
+        if self._original_sigterm is not None:
+            self._restore_signal_handler(signal.SIGTERM, self._original_sigterm)
+        self._original_sigint = None
+        self._original_sigterm = None
+        self._signal_handlers_registered = False
 
     async def _send_shutdown_notification(self) -> None:
         """Send shutdown notification via Telegram."""
@@ -116,6 +133,11 @@ class WebSocketMultiCoinMonitor:
             self.notifier.send_message(message)
         except Exception as e:
             logger.error(f"Failed to send shutdown notification: {e}")
+
+    async def _flush_monitor_notifications(self) -> None:
+        """Wait for all monitor notification tasks during graceful shutdown."""
+        for monitor in self.monitors.values():
+            await monitor.flush_notification_tasks()
 
     async def _on_price_update(self, symbol: str, price: float):
         """Callback function for WebSocket price updates."""
@@ -186,6 +208,31 @@ class WebSocketMultiCoinMonitor:
         except OSError as e:
             logger.warning(f"Failed to update heartbeat file '{self._heartbeat_file}': {e}")
 
+    def _track_notification_task(self, task: asyncio.Task) -> asyncio.Task:
+        """Track a ws_monitor-owned notification task until completion."""
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._discard_notification_task)
+        return task
+
+    def _discard_notification_task(self, task: asyncio.Task) -> None:
+        """Remove a completed notification task from tracking."""
+        self._notification_tasks.discard(task)
+
+    async def _flush_notification_tasks(self) -> None:
+        """Cancel and await ws_monitor-owned notification tasks during cleanup."""
+        while self._notification_tasks:
+            pending_tasks = list(self._notification_tasks)
+            for task in pending_tasks:
+                if not task.done():
+                    task.cancel()
+            for task in pending_tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.error(f"Notification task failed during cleanup: {exc}")
+
     async def _on_disconnect(self, reason: str) -> None:
         """Handle WebSocket disconnect event."""
         self._last_disconnect_reason = reason
@@ -204,7 +251,9 @@ class WebSocketMultiCoinMonitor:
 
         try:
             loop = asyncio.get_running_loop()
-            task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+            task = self._track_notification_task(
+                loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+            )
             task.add_done_callback(self._on_disconnect_done)
         except Exception as e:
             logger.error(f"Failed to enqueue disconnect alert: {e}")
@@ -257,7 +306,9 @@ class WebSocketMultiCoinMonitor:
 
         try:
             loop = asyncio.get_running_loop()
-            task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+            task = self._track_notification_task(
+                loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+            )
             task.add_done_callback(self._on_reconnect_done)
             self._disconnect_alert_time = None
             self._last_disconnect_reason = None
@@ -273,42 +324,52 @@ class WebSocketMultiCoinMonitor:
         print("连接方式: WebSocket 实时推送")
         print(f"{'=' * 60}\n")
 
-        if not self.monitors:
-            logger.error("No enabled coins configured. Set at least one *_ENABLED=true")
-            return
-
-        if not self.notifier.test_connection():
-            logger.warning("Test message failed to send. Check Telegram configuration")
-
-        symbols = list(self.monitors.keys())
-        self._touch_heartbeat()
-
-        self.ws_client = BinanceWebSocketClient(
-            symbols=symbols,
-            on_price_callback=self._on_price_update,
-            on_kline_callback=self._on_kline_update,
-            on_disconnect_callback=self._on_disconnect,
-            on_reconnect_callback=self._on_reconnect,
-            reconnect_delay=5.0,
-            ping_interval=self.config.ws_ping_interval_seconds,
-            pong_timeout=self.config.ws_pong_timeout_seconds,
-            message_timeout=self.config.ws_message_timeout_seconds,
-            max_reconnect_attempts=None,
-        )
-
-        if self.config.stablecoin_depeg_monitor_enabled:
-            self.stablecoin_client = DefiLlamaClient()
-            self.stablecoin_monitor = StablecoinDepegMonitor(
-                config=self.config,
-                notifier=self.notifier,
-                client=self.stablecoin_client,
-            )
+        ws_task = None
+        shutdown_task = None
+        stablecoin_task = None
+        tasks: list[asyncio.Task] = []
+        should_cleanup = False
+        should_notify_shutdown = False
+        cancellation_error: asyncio.CancelledError | None = None
 
         try:
+            self._setup_signal_handlers()
+
+            if not self.monitors:
+                logger.error("No enabled coins configured. Set at least one *_ENABLED=true")
+                return
+
+            if not self.notifier.test_connection():
+                logger.warning("Test message failed to send. Check Telegram configuration")
+
+            symbols = list(self.monitors.keys())
+            self._touch_heartbeat()
+
+            self.ws_client = BinanceWebSocketClient(
+                symbols=symbols,
+                on_price_callback=self._on_price_update,
+                on_kline_callback=self._on_kline_update,
+                on_disconnect_callback=self._on_disconnect,
+                on_reconnect_callback=self._on_reconnect,
+                reconnect_delay=5.0,
+                ping_interval=self.config.ws_ping_interval_seconds,
+                pong_timeout=self.config.ws_pong_timeout_seconds,
+                message_timeout=self.config.ws_message_timeout_seconds,
+                max_reconnect_attempts=None,
+            )
+
+            if self.config.stablecoin_depeg_monitor_enabled:
+                self.stablecoin_client = DefiLlamaClient()
+                self.stablecoin_monitor = StablecoinDepegMonitor(
+                    config=self.config,
+                    notifier=self.notifier,
+                    client=self.stablecoin_client,
+                )
+
             ws_task = asyncio.create_task(self.ws_client.start())
             shutdown_task = asyncio.create_task(self._shutdown_event.wait())
             tasks = [ws_task, shutdown_task]
-            stablecoin_task = None
+            should_cleanup = True
 
             if self.stablecoin_monitor is not None:
                 stablecoin_task = asyncio.create_task(self.stablecoin_monitor.run())
@@ -352,22 +413,48 @@ class WebSocketMultiCoinMonitor:
 
             if self._shutdown_event.is_set():
                 logger.info("Graceful shutdown in progress...")
-                await self.ws_client.stop()
-                await self._send_shutdown_notification()
+                should_notify_shutdown = True
 
         except KeyboardInterrupt:
             logger.info("\nStopping WebSocket monitor (KeyboardInterrupt)...")
+            should_notify_shutdown = False
             if self.ws_client:
                 await self.ws_client.stop()
             self.notifier.send_message("👋 加密货币价格监控已停止")
+        except asyncio.CancelledError as exc:
+            cancellation_error = exc
+            logger.info("WebSocket monitor cancelled by supervisor, performing graceful cleanup...")
         except Exception:
             logger.exception("WebSocket monitor encountered an unexpected error")
-            if self.ws_client:
-                await self.ws_client.stop()
             raise
         finally:
-            if self.stablecoin_client is not None:
-                await self.stablecoin_client.close()
+            try:
+                if should_cleanup:
+                    for task in tasks:
+                        if task is not None:
+                            task.cancel()
+                    for task in tasks:
+                        if task is not None:
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
+
+                    if self.ws_client:
+                        await self.ws_client.stop()
+
+                    await self._flush_monitor_notifications()
+                    await self._flush_notification_tasks()
+
+                    if should_notify_shutdown:
+                        await self._send_shutdown_notification()
+            finally:
+                self._restore_signal_handlers()
+                if self.stablecoin_client is not None:
+                    await self.stablecoin_client.close()
+
+            if cancellation_error is not None:
+                raise cancellation_error
 
     async def print_statistics(self):
         """Print WebSocket connection statistics."""

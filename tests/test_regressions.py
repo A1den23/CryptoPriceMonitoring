@@ -246,6 +246,9 @@ class DummyResponse:
     def raise_for_status(self) -> None:
         return None
 
+    def json(self) -> dict:
+        return {"ok": True}
+
 
 class FakeAsyncIterableWebSocket:
     def __init__(self, messages: list[str]) -> None:
@@ -1383,6 +1386,58 @@ class BinanceWebSocketClientRegressionTests(unittest.TestCase):
 
 
 class TelegramBotRegressionTests(unittest.TestCase):
+    def test_run_async_cleans_up_when_initialize_fails_after_partial_setup(self) -> None:
+        config = types.SimpleNamespace(
+            telegram_bot_token="token",
+            get_enabled_coins=lambda: [],
+        )
+        fake_fetcher = object()
+        fetcher_context = FakeAsyncContextManager(fake_fetcher)
+        heartbeat_task = FakeHeartbeatTask()
+
+        async def fail_initialize() -> None:
+            application.initialized = True
+            raise RuntimeError("initialize failed")
+
+        application = types.SimpleNamespace(
+            initialized=False,
+            running=False,
+            initialize=AsyncMock(side_effect=fail_initialize),
+            start=AsyncMock(),
+            stop=AsyncMock(),
+            shutdown=AsyncMock(),
+            updater=types.SimpleNamespace(
+                running=False,
+                start_polling=AsyncMock(),
+                stop=AsyncMock(),
+            ),
+        )
+
+        def fake_create_task(coro):
+            coro.close()
+            return heartbeat_task
+
+        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler), \
+             patch("bot.app.AsyncBinancePriceFetcher", return_value=fetcher_context), \
+             patch("bot.app.asyncio.create_task", side_effect=fake_create_task):
+            telegram_bot = bot.TelegramBot(config)
+            telegram_bot.application = application
+
+            with self.assertRaisesRegex(RuntimeError, "initialize failed"):
+                asyncio.run(telegram_bot.run_async())
+
+        self.assertIs(telegram_bot.fetcher, fake_fetcher)
+        self.assertTrue(fetcher_context.entered)
+        self.assertTrue(fetcher_context.exited)
+        self.assertTrue(heartbeat_task.cancel_called)
+        self.assertTrue(heartbeat_task.awaited)
+        application.initialize.assert_awaited_once_with()
+        application.start.assert_not_awaited()
+        application.updater.start_polling.assert_not_awaited()
+        application.updater.stop.assert_not_awaited()
+        application.stop.assert_not_awaited()
+        application.shutdown.assert_awaited_once_with()
+
     def test_run_async_cleans_up_when_startup_fails(self) -> None:
         config = types.SimpleNamespace(
             telegram_bot_token="token",

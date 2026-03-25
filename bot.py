@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility wrapper for the bot package."""
+"""Compatibility wrapper for the primary ``python -m bot`` entrypoint."""
 
 from bot import main
 

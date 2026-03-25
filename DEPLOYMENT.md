@@ -94,6 +94,12 @@ STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300
 docker compose up -d --build
 ```
 
+说明：
+
+- Compose 会分别以 `python -m monitor` 和 `python -m bot` 作为两个服务的主入口
+- 健康检查会按主进程命令匹配对应的心跳文件
+- `docker-compose.yml` 中保留了 `deploy.resources` 配置，但在常规 `docker compose up` 用法下它通常不是强保证；如需严格资源限制，请结合实际运行时能力单独验证
+
 ## 3. 验证部署
 
 ```bash
@@ -104,16 +110,32 @@ docker compose ps
 docker compose logs -f
 
 # 查看监控当前状态
-docker compose exec crypto-monitor python monitor.py --status
-# 等价写法
 docker compose exec crypto-monitor python -m monitor --status
+
+# 查看 Bot 入口是否可执行
+docker compose exec crypto-bot python -m bot --help
 ```
 
 正常情况下：
 
 - `crypto-monitor` 日志包含 `WebSocket connected`
 - `crypto-bot` 日志包含 `Application started`
-- 顶层 `monitor.py` / `bot.py` 仍可用，但当前主要实现已分别拆分到 `monitor/` 和 `bot/` 包
+- 容器主入口统一使用 `python -m monitor` / `python -m bot`
+- 顶层 `monitor.py` / `bot.py` 仍可用，但仅作为兼容包装层
+
+如需在宿主机做本地测试，当前稳定测试入口为：
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+如需只做部署契约自检，请直接运行：
+
+```bash
+python3 -m unittest discover -s tests -p 'test_deployment_contracts.py'
+```
+
+对应契约测试文件路径为 `tests/test_deployment_contracts.py`。
 
 ## 4. 日常运维
 

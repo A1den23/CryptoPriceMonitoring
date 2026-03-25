@@ -1,3 +1,5 @@
+"""Module entrypoint for ``python -m bot``."""
+
 from . import main
 
 

@@ -1,3 +1,5 @@
+"""Module entrypoint for ``python -m monitor``."""
+
 from . import main
 
 

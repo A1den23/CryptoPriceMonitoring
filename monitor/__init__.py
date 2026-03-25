@@ -13,6 +13,18 @@ import asyncio
 from importlib import import_module
 import sys
 
+from common import (
+    ConfigManager,
+    format_price,
+    format_threshold,
+    get_coin_display_name,
+    get_coin_emoji,
+    load_environment,
+    logger,
+    now_in_configured_timezone,
+    setup_logging,
+)
+
 __all__ = [
     "BinanceWebSocketClient",
     "ConfigManager",
@@ -35,29 +47,20 @@ __all__ = [
     "test_volatility_alert",
 ]
 
-_EXPORTS = {
+_LAZY_EXPORTS = {
     "BinancePriceFetcher": ("common", "BinancePriceFetcher"),
     "BinanceWebSocketClient": ("common", "BinanceWebSocketClient"),
-    "ConfigManager": ("common", "ConfigManager"),
     "PriceMonitor": (".price_monitor", "PriceMonitor"),
     "StablecoinDepegMonitor": (".stablecoin_depeg_monitor", "StablecoinDepegMonitor"),
     "TelegramNotifier": ("common", "TelegramNotifier"),
     "WebSocketMultiCoinMonitor": (".ws_monitor", "WebSocketMultiCoinMonitor"),
-    "format_price": ("common", "format_price"),
-    "format_threshold": ("common", "format_threshold"),
-    "get_coin_display_name": ("common", "get_coin_display_name"),
-    "get_coin_emoji": ("common", "get_coin_emoji"),
-    "load_environment": ("common", "load_environment"),
-    "logger": ("common", "logger"),
-    "now_in_configured_timezone": ("common", "now_in_configured_timezone"),
     "price_monitor": (".price_monitor", None),
-    "setup_logging": ("common", "setup_logging"),
 }
 
 
 def __getattr__(name: str):
     try:
-        module_name, attr_name = _EXPORTS[name]
+        module_name, attr_name = _LAZY_EXPORTS[name]
     except KeyError as exc:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
 
@@ -71,9 +74,10 @@ def __getattr__(name: str):
 
 
 def _resolve_export(name: str):
-    if name in globals():
+    try:
         return globals()[name]
-    return __getattr__(name)
+    except KeyError:
+        return __getattr__(name)
 
 
 def test_volatility_alert():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility wrapper for the monitor package."""
+"""Compatibility wrapper for the primary ``python -m monitor`` entrypoint."""
 
 from monitor import main
 

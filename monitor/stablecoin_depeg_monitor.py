@@ -7,7 +7,9 @@ from html import escape
 from dataclasses import dataclass
 from datetime import datetime
 
-from common import DefiLlamaClient, StablecoinSnapshot, now_in_configured_timezone, logger
+from common.clients.defillama import DefiLlamaClient, StablecoinSnapshot
+from common.logging import logger
+from common.utils import now_in_configured_timezone
 
 
 @dataclass(slots=True)
@@ -55,7 +57,7 @@ class StablecoinDepegMonitor:
             return True
         return (now - state.last_alert_time).total_seconds() >= self.cooldown_seconds
 
-    def _build_alert_message(self, snapshot: StablecoinSnapshot) -> str | None:
+    def _build_alert_message(self, snapshot: StablecoinSnapshot) -> tuple[str, datetime] | None:
         state = self._states.setdefault(snapshot.symbol, StablecoinAlertState())
         if not self._is_depegged(snapshot.price):
             state.is_depegged = False
@@ -69,15 +71,22 @@ class StablecoinDepegMonitor:
         deviation_percent = self._deviation_percent(snapshot.price)
         message = self._format_alert_message(snapshot, deviation_percent, now)
         state.is_depegged = True
-        state.last_alert_time = now
-        return message
+        return message, now
+
+    def _mark_alert_sent(self, symbol: str, alert_time: datetime) -> None:
+        state = self._states.setdefault(symbol, StablecoinAlertState())
+        state.is_depegged = True
+        state.last_alert_time = alert_time
 
     def evaluate_snapshot(self, snapshot: StablecoinSnapshot) -> bool:
-        message = self._build_alert_message(snapshot)
-        if message is None:
+        alert = self._build_alert_message(snapshot)
+        if alert is None:
             return False
-        self.notifier.send_message(message)
-        return True
+        message, alert_time = alert
+        sent = self.notifier.send_message(message)
+        if sent:
+            self._mark_alert_sent(snapshot.symbol, alert_time)
+        return sent
 
     async def _send_alert(self, message: str) -> bool:
         return await asyncio.to_thread(self.notifier.send_message, message)
@@ -86,10 +95,14 @@ class StablecoinDepegMonitor:
         snapshots = await self.client.fetch_stablecoins(top_n=self.top_n)
         alerts = 0
         for snapshot in snapshots:
-            message = self._build_alert_message(snapshot)
-            if message is None:
+            alert = self._build_alert_message(snapshot)
+            if alert is None:
                 continue
-            await self._send_alert(message)
+            message, alert_time = alert
+            sent = await self._send_alert(message)
+            if not sent:
+                continue
+            self._mark_alert_sent(snapshot.symbol, alert_time)
             alerts += 1
         logger.info(f"Stablecoin poll completed: snapshots={len(snapshots)}, alerts={alerts}")
         return alerts

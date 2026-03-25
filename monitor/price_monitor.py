@@ -8,15 +8,15 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from common import (
-    CoinConfig,
-    TelegramNotifier,
+from common.config import CoinConfig
+from common.logging import logger
+from common.notifications import TelegramNotifier
+from common.utils import (
     format_price,
     format_threshold,
     get_coin_display_name,
     get_coin_emoji,
     now_in_configured_timezone,
-    logger,
 )
 
 
@@ -128,10 +128,19 @@ class PriceMonitor:
     def _on_notification_done(self, task: asyncio.Task) -> None:
         """Cleanup completed async notification task and log errors."""
         self._notification_tasks.discard(task)
+        if task.cancelled():
+            return
         try:
             task.result()
         except Exception:
             logger.exception(f"[{self.config.symbol}] Failed to send Telegram notification")
+
+    async def flush_notification_tasks(self) -> None:
+        """Wait for any queued notification tasks to finish."""
+        if not self._notification_tasks:
+            return
+
+        await asyncio.gather(*tuple(self._notification_tasks), return_exceptions=True)
 
     def _send_notification(self, message: str) -> None:
         """Send notification without blocking the event loop."""

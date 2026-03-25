@@ -6,7 +6,9 @@ from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from common import CoinConfig, StablecoinSnapshot, format_price, get_coin_emoji
+from common.clients.defillama import StablecoinSnapshot
+from common.config import CoinConfig
+from common.utils import format_price, get_coin_emoji
 
 
 def _build_coin_button_rows(
