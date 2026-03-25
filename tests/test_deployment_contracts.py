@@ -38,6 +38,20 @@ class DeploymentContractsTests(unittest.TestCase):
             r"deploy\.resources[\s\S]{0,200}docker compose up[\s\S]{0,200}(验证|校验|确认)",
         )
 
+    def test_readme_documents_price_picker_and_direct_lookup(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("/price", readme)
+        self.assertIn("/price BTC", readme)
+        self.assertRegex(readme, r"/price[\s\S]{0,80}(选择|弹出)")
+
+    def test_deployment_guide_documents_price_picker_and_direct_lookup(self) -> None:
+        deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+
+        self.assertIn("/price", deployment)
+        self.assertIn("/price BTC", deployment)
+        self.assertRegex(deployment, r"/price[\s\S]{0,80}(选择|弹出)")
+
 
 if __name__ == "__main__":
     unittest.main()

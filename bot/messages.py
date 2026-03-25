@@ -8,7 +8,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from common.clients.defillama import StablecoinSnapshot
 from common.config import CoinConfig
-from common.utils import format_price, get_coin_emoji
+from common.utils import format_price, format_threshold, get_coin_emoji
 
 
 def _build_coin_button_rows(
@@ -109,13 +109,14 @@ def render_help_message(enabled_coins: list[CoinConfig]) -> str:
     help_message = (
         "📖 <b>帮助与命令</b>\n\n"
         "<b>命令：</b>\n"
-        "/price [coin] - 查询指定币种价格\n"
+        "/price - 打开币种选择器并查询价格\n"
         "  示例：/price BTC\n"
         "/stablecoins - 查看前25稳定币价格\n"
         "/status - 查看所有币种详细状态\n"
         "/all - 快速查看所有已启用币种价格\n"
         "/start - 显示欢迎菜单和快捷按钮\n\n"
         "<b>按钮：</b>\n"
+        "使用 /price 可进入选择界面，也可直接输入 /price BTC 查询指定币种。\n"
         "点击任意按钮即可立即查看最新价格！\n\n"
         "<b>监控币种：</b>\n"
     )
@@ -171,3 +172,28 @@ def render_price_update(
         f"📈 交易对：{symbol}\n"
         f"⏱️ {timestamp}"
     )
+
+
+def render_price_picker_message() -> str:
+    """Build the /price picker prompt."""
+    return "💰 <b>请选择要查询的币种</b>"
+
+
+def render_price_detail_message(
+    coin_config: CoinConfig,
+    price: float,
+    timestamp: str,
+) -> str:
+    """Build the detailed /price coin message."""
+    emoji = get_coin_emoji(coin_config.coin_name)
+    enabled_text = "已启用" if coin_config.enabled else "未启用"
+    return (
+        f"{emoji} <b>{coin_config.coin_name}</b> 价格详情\n"
+        f"💰 当前价格：{format_price(price)}\n"
+        f"📈 交易对：{coin_config.symbol}\n"
+        f"📍 里程碑：每 {format_threshold(coin_config.integer_threshold)}\n"
+        f"📊 波动告警：{coin_config.volatility_percent}%/{coin_config.volatility_window}s\n"
+        f"⚙️ 状态：{enabled_text}\n"
+        f"⏱️ {timestamp}"
+    )
+

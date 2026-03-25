@@ -5,7 +5,7 @@ Telegram command and callback handlers.
 import re
 from difflib import get_close_matches
 
-from telegram import Update
+from telegram import InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from common.clients.defillama import DefiLlamaClient
@@ -13,7 +13,8 @@ from common.logging import logger
 
 from .messages import (
     render_help_message,
-    render_price_update,
+    render_price_detail_message,
+    render_price_picker_message,
     render_stablecoin_prices_message,
     render_status_message,
     render_welcome_message,
@@ -63,11 +64,11 @@ async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
     else:
+        enabled_coin_rows = self._build_coin_button_rows()
         await update.message.reply_text(
-            "❌ 请输入币种名称。\n"
-            "示例：/price BTC\n\n"
-            f"可用币种：{', '.join(self.config.coin_names)}",
+            render_price_picker_message(),
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(enabled_coin_rows),
             disable_notification=False,
         )
         return
@@ -157,9 +158,8 @@ async def send_price_update(self, chat_id, coin_name, message=None):
     try:
         price = await self._get_price(coin_config.symbol)
         if price is not None:
-            response = render_price_update(
-                coin_name,
-                coin_config.symbol,
+            response = render_price_detail_message(
+                coin_config,
                 price,
                 self._format_timestamp(),
             )
