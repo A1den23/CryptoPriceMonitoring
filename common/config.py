@@ -19,6 +19,21 @@ _ENV_LOADED = False
 _ENV_PATH = Path(__file__).parent.parent / ".env"
 
 
+def get_configured_log_level_name() -> str | None:
+    """Return the configured log level name from environment if set."""
+    return os.getenv("LOG_LEVEL")
+
+
+def is_debug_mode_enabled() -> bool:
+    """Return whether debug mode is enabled in environment configuration."""
+    return os.getenv("DEBUG", "false").lower() == "true"
+
+
+def get_configured_timezone_name() -> str:
+    """Return the configured timezone name from environment."""
+    return os.getenv("TIMEZONE", "Asia/Shanghai")
+
+
 def load_environment() -> None:
     """Load environment variables from the project .env file once."""
     global _ENV_LOADED
@@ -156,6 +171,14 @@ class ConfigManager:
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        self.bot_heartbeat_file = os.getenv("BOT_HEARTBEAT_FILE", "/tmp/bot_heartbeat")
+        self.bot_heartbeat_interval_seconds = _safe_float_env(
+            "BOT_HEARTBEAT_INTERVAL_SECONDS",
+            30.0,
+            0.000001,
+            86400.0,
+        )
+        self.monitor_heartbeat_file = os.getenv("MONITOR_HEARTBEAT_FILE", "/tmp/monitor_heartbeat")
         # Note: CHECK_INTERVAL_SECONDS is kept for backwards compatibility but not used
         # (WebSocket mode provides real-time updates without polling)
         self.check_interval = _safe_int_env("CHECK_INTERVAL_SECONDS", 5, 1, 86400)

@@ -1,4 +1,6 @@
 import asyncio
+import importlib
+import importlib.util
 import signal
 import sys
 import threading
@@ -7,168 +9,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from tests.stubs import install_dependency_stubs
+
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_ROOT))
 
 
-def _install_dependency_stubs() -> None:
-    if "dotenv" not in sys.modules:
-        dotenv = types.ModuleType("dotenv")
-        dotenv.load_dotenv = lambda *args, **kwargs: False
-        sys.modules["dotenv"] = dotenv
-
-    if "tenacity" not in sys.modules:
-        tenacity = types.ModuleType("tenacity")
-
-        def retry(*args, **kwargs):
-            def decorator(func):
-                return func
-
-            return decorator
-
-        tenacity.retry = retry
-        tenacity.retry_if_exception_type = lambda *args, **kwargs: None
-        tenacity.stop_after_attempt = lambda *args, **kwargs: None
-        tenacity.wait_exponential = lambda *args, **kwargs: None
-        sys.modules["tenacity"] = tenacity
-
-    if "requests" not in sys.modules:
-        requests = types.ModuleType("requests")
-
-        class RequestException(Exception):
-            pass
-
-        class Session:
-            def mount(self, *args, **kwargs) -> None:
-                return None
-
-            def get(self, *args, **kwargs):
-                raise NotImplementedError
-
-            def post(self, *args, **kwargs):
-                raise NotImplementedError
-
-            def close(self) -> None:
-                return None
-
-        class HTTPAdapter:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        requests.Session = Session
-        requests.exceptions = types.SimpleNamespace(RequestException=RequestException)
-        requests.adapters = types.SimpleNamespace(HTTPAdapter=HTTPAdapter)
-        sys.modules["requests"] = requests
-
-    if "aiohttp" not in sys.modules:
-        aiohttp = types.ModuleType("aiohttp")
-
-        class ClientError(Exception):
-            pass
-
-        class ClientTimeout:
-            def __init__(self, total=None) -> None:
-                self.total = total
-
-        class ClientSession:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            async def close(self) -> None:
-                return None
-
-        aiohttp.ClientError = ClientError
-        aiohttp.ClientSession = ClientSession
-        aiohttp.ClientTimeout = ClientTimeout
-        sys.modules["aiohttp"] = aiohttp
-
-    if "websockets" not in sys.modules:
-        websockets = types.ModuleType("websockets")
-
-        class DummyProtocol:
-            async def ping(self):
-                return None
-
-            async def close(self) -> None:
-                return None
-
-        async def connect(*args, **kwargs):
-            return DummyProtocol()
-
-        class ConnectionClosed(Exception):
-            pass
-
-        websockets.connect = connect
-        websockets.client = types.SimpleNamespace(WebSocketClientProtocol=DummyProtocol)
-        websockets.exceptions = types.SimpleNamespace(ConnectionClosed=ConnectionClosed)
-        sys.modules["websockets"] = websockets
-
-    if "telegram" not in sys.modules:
-        telegram = types.ModuleType("telegram")
-        telegram.Update = type("Update", (), {"ALL_TYPES": object()})
-        telegram.InlineKeyboardButton = type(
-            "InlineKeyboardButton",
-            (),
-            {"__init__": lambda self, text, callback_data: None},
-        )
-        telegram.InlineKeyboardMarkup = type(
-            "InlineKeyboardMarkup",
-            (),
-            {"__init__": lambda self, keyboard: None},
-        )
-        sys.modules["telegram"] = telegram
-
-    if "telegram.ext" not in sys.modules:
-        telegram_ext = types.ModuleType("telegram.ext")
-
-        class ApplicationBuilder:
-            def token(self, token: str):
-                return self
-
-            def connection_pool_size(self, size: int):
-                return self
-
-            def pool_timeout(self, timeout: float | None):
-                return self
-
-            def get_updates_connection_pool_size(self, size: int):
-                return self
-
-            def get_updates_pool_timeout(self, timeout: float | None):
-                return self
-
-            def build(self):
-                async def _async_noop(*args, **kwargs) -> None:
-                    return None
-
-                return types.SimpleNamespace(
-                    add_handler=lambda *args, **kwargs: None,
-                    bot=types.SimpleNamespace(send_message=_async_noop),
-                    updater=types.SimpleNamespace(start_polling=_async_noop, stop=_async_noop),
-                    initialize=_async_noop,
-                    start=_async_noop,
-                    stop=_async_noop,
-                    shutdown=_async_noop,
-                )
-
-        telegram_ext.Application = type(
-            "Application",
-            (),
-            {"builder": staticmethod(lambda: ApplicationBuilder())},
-        )
-        telegram_ext.CommandHandler = type("CommandHandler", (), {"__init__": lambda self, *args, **kwargs: None})
-        telegram_ext.CallbackQueryHandler = type(
-            "CallbackQueryHandler",
-            (),
-            {"__init__": lambda self, *args, **kwargs: None},
-        )
-        telegram_ext.ContextTypes = types.SimpleNamespace(DEFAULT_TYPE=object)
-        sys.modules["telegram.ext"] = telegram_ext
-
-
-_install_dependency_stubs()
+install_dependency_stubs()
 
 from common.config import CoinConfig
 from monitor.price_monitor import PriceMonitor
@@ -266,6 +115,35 @@ class CleanupTask:
         return _wait().__await__()
 
 
+class RuntimeHelperModuleTests(unittest.TestCase):
+    def test_shared_runtime_helper_module_exposes_signal_handler_registry_api(self) -> None:
+        self.assertIsNotNone(importlib.util.find_spec("common.runtime"))
+
+        runtime = importlib.import_module("common.runtime")
+        registry_cls = getattr(runtime, "SignalHandlerRegistry", None)
+        self.assertIsNotNone(registry_cls)
+
+        handler = lambda signum, frame: None
+        original_sigint = object()
+        original_sigterm = object()
+        registry = registry_cls()
+
+        with patch("common.runtime.signal.signal") as mock_signal:
+            mock_signal.side_effect = [original_sigint, original_sigterm, None, None]
+            registry.setup(handler)
+            registry.restore()
+
+        self.assertEqual(
+            mock_signal.call_args_list,
+            [
+                unittest.mock.call(signal.SIGINT, handler),
+                unittest.mock.call(signal.SIGTERM, handler),
+                unittest.mock.call(signal.SIGINT, original_sigint),
+                unittest.mock.call(signal.SIGTERM, original_sigterm),
+            ],
+        )
+
+
 class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def _build_coin_config(self) -> CoinConfig:
         return CoinConfig(
@@ -281,6 +159,9 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def _build_ws_config(self):
         coin = self._build_coin_config()
         return types.SimpleNamespace(
+            telegram_bot_token="token",
+            telegram_chat_id="chat",
+            monitor_heartbeat_file="/tmp/monitor-heartbeat-test",
             get_enabled_coins=lambda: [coin],
             volume_alert_cooldown_seconds=60,
             volatility_alert_cooldown_seconds=60,
@@ -348,6 +229,75 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         ws_client.stop.assert_awaited_once_with()
         fake_monitor.flush_notification_tasks.assert_awaited_once_with()
+
+    async def test_ws_monitor_run_uses_logger_instead_of_runtime_prints(self) -> None:
+        ws_task = FakeTask()
+        shutdown_task = FakeTask()
+        fake_monitor = types.SimpleNamespace(flush_notification_tasks=AsyncMock())
+        ws_client = types.SimpleNamespace(
+            start=AsyncMock(),
+            stop=AsyncMock(),
+            get_statistics=lambda: {},
+        )
+
+        def fake_create_task(coro):
+            name = coro.cr_code.co_name
+            coro.close()
+            if name == "start":
+                return ws_task
+            return shutdown_task
+
+        with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
+             patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
+             patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
+             patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
+             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task})), \
+             patch("monitor.ws_monitor.print") as mock_print:
+            notifier = mock_notifier_cls.return_value
+            notifier.test_connection.return_value = True
+            notifier.send_message.return_value = True
+
+            ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
+            ws_monitor.monitors = {"BTCUSDT": fake_monitor}
+            ws_monitor._shutdown_event.set()
+
+            await ws_monitor.run()
+
+        mock_print.assert_not_called()
+
+    async def test_ws_monitor_run_closes_owned_notifier_on_shutdown(self) -> None:
+        ws_task = FakeTask()
+        shutdown_task = FakeTask()
+        fake_monitor = types.SimpleNamespace(flush_notification_tasks=AsyncMock())
+        ws_client = types.SimpleNamespace(
+            start=AsyncMock(),
+            stop=AsyncMock(),
+            get_statistics=lambda: {},
+        )
+
+        def fake_create_task(coro):
+            name = coro.cr_code.co_name
+            coro.close()
+            if name == "start":
+                return ws_task
+            return shutdown_task
+
+        with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
+             patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
+             patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
+             patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
+             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task})):
+            notifier = mock_notifier_cls.return_value
+            notifier.test_connection.return_value = True
+            notifier.send_message.return_value = True
+
+            ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
+            ws_monitor.monitors = {"BTCUSDT": fake_monitor}
+            ws_monitor._shutdown_event.set()
+
+            await ws_monitor.run()
+
+        notifier.close.assert_called_once_with()
 
     async def test_ws_monitor_run_cleans_up_on_parent_task_cancellation(self) -> None:
         fake_monitor = types.SimpleNamespace(flush_notification_tasks=AsyncMock())

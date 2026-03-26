@@ -11,13 +11,15 @@ from common.config import CoinConfig
 from common.utils import format_price, format_threshold, get_coin_emoji
 
 
-def _build_coin_button_rows(
-    self,
+def build_coin_button_rows(
+    enabled_coins: list[CoinConfig],
+    *,
     exclude_coin: str | None = None,
+    row_size: int = 2,
 ) -> list[list[InlineKeyboardButton]]:
     """Build rows of enabled coin buttons."""
     buttons: list[InlineKeyboardButton] = []
-    for coin_config in self.config.get_enabled_coins():
+    for coin_config in enabled_coins:
         if coin_config.coin_name == exclude_coin:
             continue
         emoji = get_coin_emoji(coin_config.coin_name)
@@ -27,35 +29,36 @@ def _build_coin_button_rows(
                 callback_data=f"price_{coin_config.coin_name}",
             )
         )
-    return self._chunk_buttons(buttons)
+    return [buttons[i:i + row_size] for i in range(0, len(buttons), row_size)]
 
 
-def _build_start_keyboard(self) -> InlineKeyboardMarkup:
+def build_start_keyboard(enabled_coins: list[CoinConfig]) -> InlineKeyboardMarkup:
     """Build the keyboard shown on /start."""
     keyboard = [[InlineKeyboardButton("📊 查看全部价格", callback_data="all_prices")]]
-    keyboard.extend(self._build_coin_button_rows())
+    keyboard.extend(build_coin_button_rows(enabled_coins))
     return InlineKeyboardMarkup(keyboard)
 
 
-def _build_price_keyboard(self, coin_name: str) -> InlineKeyboardMarkup:
+def build_price_keyboard(coin_name: str, enabled_coins: list[CoinConfig]) -> InlineKeyboardMarkup:
     """Build the keyboard shown for a specific coin price update."""
     keyboard = [
         [InlineKeyboardButton(f"🔄 刷新 {coin_name}", callback_data=f"price_{coin_name}")],
         [InlineKeyboardButton("📊 查看全部价格", callback_data="all_prices")],
     ]
-    keyboard.extend(self._build_coin_button_rows(exclude_coin=coin_name))
+    keyboard.extend(build_coin_button_rows(enabled_coins, exclude_coin=coin_name))
     return InlineKeyboardMarkup(keyboard)
 
 
-def _render_all_prices_message(
-    self,
+def render_all_prices_message(
+    *,
     enabled_coins: list[CoinConfig],
     prices: dict[str, float | None],
+    timestamp: str,
 ) -> str:
     """Render the shared all-prices message body."""
     message = "💰 <b>当前价格</b>\n\n"
     if not enabled_coins:
-        return f"{message}❌ 当前没有启用任何币种！\n\n⏱️ {self._format_timestamp()}"
+        return f"{message}❌ 当前没有启用任何币种！\n\n⏱️ {timestamp}"
 
     for coin_config in enabled_coins:
         safe_coin_name = escape(coin_config.coin_name)
@@ -66,7 +69,7 @@ def _render_all_prices_message(
         else:
             message += f"❌ <b>{safe_coin_name}</b>: 获取失败\n"
 
-    return f"{message}\n⏱️ {self._format_timestamp()}"
+    return f"{message}\n⏱️ {timestamp}"
 
 
 def render_stablecoin_prices_message(
@@ -131,15 +134,17 @@ def render_help_message(enabled_coins: list[CoinConfig]) -> str:
 
 
 def render_status_message(
-    self,
+    *,
     enabled_coins: list[CoinConfig],
     prices: dict[str, float | None],
+    uptime: str,
+    timestamp: str,
 ) -> str:
     """Build the /status message."""
     status_message = "📊 <b>监控状态</b>\n\n"
 
     if not enabled_coins:
-        return f"{status_message}❌ 当前没有启用任何币种！\n\n⏱️ {self._format_timestamp()}"
+        return f"{status_message}❌ 当前没有启用任何币种！\n\n⏱️ {timestamp}"
 
     for coin_config in enabled_coins:
         safe_coin_name = escape(coin_config.coin_name)
@@ -153,13 +158,12 @@ def render_status_message(
         status_message += (
             f"{emoji} <b>{safe_coin_name}</b> ({safe_symbol})\n"
             f"   💰 当前价格：{format_price(price)}\n"
-            f"   📍 里程碑：每 {self._format_threshold(coin_config)}\n"
+            f"   📍 里程碑：每 {format_threshold(coin_config.integer_threshold)}\n"
             f"   📊 波动告警：{coin_config.volatility_percent}%/{coin_config.volatility_window}s\n\n"
         )
 
-    uptime = self._format_uptime()
     status_message += f"\n⌛ 运行时间：{uptime}"
-    status_message += f"\n⏱️ {self._format_timestamp()}"
+    status_message += f"\n⏱️ {timestamp}"
     return status_message
 
 

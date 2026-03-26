@@ -92,7 +92,12 @@ async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYP
     """Handle /status command."""
     enabled_coins = self.config.get_enabled_coins()
     prices = await self._get_prices([c.symbol for c in enabled_coins])
-    status_message = render_status_message(self, enabled_coins, prices)
+    status_message = render_status_message(
+        enabled_coins=enabled_coins,
+        prices=prices,
+        uptime=self._format_uptime(),
+        timestamp=self._format_timestamp(),
+    )
     await update.message.reply_text(status_message, parse_mode="HTML", disable_notification=False)
 
 

@@ -3,7 +3,6 @@ WebSocket monitor orchestration and runtime lifecycle management.
 """
 
 import asyncio
-import os
 import signal
 from datetime import datetime
 from pathlib import Path
@@ -13,9 +12,16 @@ from common.clients.websocket import BinanceWebSocketClient
 from common.config import ConfigManager
 from common.logging import logger
 from common.notifications import TelegramNotifier
+from common.runtime import SignalHandlerRegistry
 from common.utils import now_in_configured_timezone
 
 from .price_monitor import PriceMonitor
+from .runtime_messages import (
+    render_disconnect_alert,
+    render_realtime_updates_block,
+    render_reconnect_alert,
+    render_shutdown_notification,
+)
 from .stablecoin_depeg_monitor import StablecoinDepegMonitor
 
 
@@ -29,7 +35,10 @@ class WebSocketMultiCoinMonitor:
 
     def __init__(self, config: ConfigManager):
         self.config = config
-        self.notifier = TelegramNotifier()
+        self.notifier = TelegramNotifier(
+            bot_token=self.config.telegram_bot_token,
+            chat_id=self.config.telegram_chat_id,
+        )
 
         self.monitors: dict[str, PriceMonitor] = {}
         self._load_monitors()
@@ -44,6 +53,7 @@ class WebSocketMultiCoinMonitor:
         self._update_lock = asyncio.Lock()
 
         self._shutdown_event = asyncio.Event()
+        self._signal_registry = SignalHandlerRegistry()
         self._original_sigint = None
         self._original_sigterm = None
         self._signal_handlers_registered = False
@@ -51,7 +61,7 @@ class WebSocketMultiCoinMonitor:
         self._last_disconnect_reason: str | None = None
         self._notification_tasks: set[asyncio.Task] = set()
 
-        self._heartbeat_file = Path(os.getenv("MONITOR_HEARTBEAT_FILE", "/tmp/monitor_heartbeat"))
+        self._heartbeat_file = Path(self.config.monitor_heartbeat_file)
         self._last_heartbeat_touch: datetime | None = None
 
     def _load_monitors(self):
@@ -75,8 +85,9 @@ class WebSocketMultiCoinMonitor:
         """Setup signal handlers for graceful shutdown."""
         if self._signal_handlers_registered:
             return
-        self._original_sigint = signal.signal(signal.SIGINT, self._signal_handler)
-        self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
+        self._signal_registry.setup(self._signal_handler)
+        self._original_sigint = self._signal_registry._original_sigint
+        self._original_sigterm = self._signal_registry._original_sigterm
         self._signal_handlers_registered = True
         logger.debug("Signal handlers registered for SIGINT and SIGTERM")
 
@@ -93,19 +104,13 @@ class WebSocketMultiCoinMonitor:
     @staticmethod
     def _restore_signal_handler(signum: int, original_handler) -> None:
         """Restore original signal handler, handling cross-platform differences."""
-        try:
-            signal.signal(signum, original_handler)
-        except (ValueError, OSError):
-            pass
+        SignalHandlerRegistry._restore_signal(signum, original_handler)
 
     def _restore_signal_handlers(self) -> None:
         """Restore original signal handlers on monitor exit."""
         if not self._signal_handlers_registered:
             return
-        if self._original_sigint is not None:
-            self._restore_signal_handler(signal.SIGINT, self._original_sigint)
-        if self._original_sigterm is not None:
-            self._restore_signal_handler(signal.SIGTERM, self._original_sigterm)
+        self._signal_registry.restore()
         self._original_sigint = None
         self._original_sigterm = None
         self._signal_handlers_registered = False
@@ -122,12 +127,10 @@ class WebSocketMultiCoinMonitor:
             minutes = int((uptime_seconds % 3600) // 60)
             uptime = f"{hours}h {minutes}m"
 
-        message = (
-            f"👋 <b>加密货币价格监控已停止</b>\n"
-            f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"⌛ 运行时间: {uptime}\n"
-            f"🪙 监控币种: {len(self.monitors)} 个\n"
-            f"📊 状态: 优雅关闭"
+        message = render_shutdown_notification(
+            current_time=now,
+            uptime=uptime,
+            monitor_count=len(self.monitors),
         )
         try:
             self.notifier.send_message(message)
@@ -187,10 +190,7 @@ class WebSocketMultiCoinMonitor:
             logger.info(f"  {update}")
 
         try:
-            print(f"[{timestamp}] 实时更新:")
-            for update in updates_to_print:
-                print(f"  {update}")
-            print()
+            print(render_realtime_updates_block(timestamp=timestamp, updates=updates_to_print))
         except (OSError, IOError):
             pass
         finally:
@@ -238,15 +238,9 @@ class WebSocketMultiCoinMonitor:
         self._last_disconnect_reason = reason
         self._disconnect_alert_time = now_in_configured_timezone()
 
-        message = (
-            f"🚨🚨【连接断开警报】🚨🚨\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ 价格监控连接已中断！\n"
-            f"📡 连接状态: 已断开\n"
-            f"🔍 断开原因: {reason}\n"
-            f"⏱️ {self._disconnect_alert_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"💡 系统正在尝试自动重连..."
+        message = render_disconnect_alert(
+            reason=reason,
+            current_time=self._disconnect_alert_time,
         )
 
         try:
@@ -294,14 +288,10 @@ class WebSocketMultiCoinMonitor:
             downtime_seconds = (now - self._disconnect_alert_time).total_seconds()
             downtime = self._format_downtime(downtime_seconds)
 
-        message = (
-            f"✅✅【连接恢复通知】✅✅\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"📡 价格监控已恢复正常\n"
-            f"🔄 重连次数: {attempt_count} 次\n"
-            f"⏱️ 中断时长: {downtime if downtime else '未知'}\n"
-            f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"━━━━━━━━━━━━━━━━━"
+        message = render_reconnect_alert(
+            attempt_count=attempt_count,
+            downtime=downtime if downtime else "未知",
+            current_time=now,
         )
 
         try:
@@ -317,12 +307,12 @@ class WebSocketMultiCoinMonitor:
 
     async def run(self):
         """Start WebSocket monitoring."""
-        print(f"\n{'=' * 60}")
-        print("启动多币种价格监控 (WebSocket 模式)")
-        print(f"{'=' * 60}")
-        print(f"监控币种: {len(self.monitors)} 个")
-        print("连接方式: WebSocket 实时推送")
-        print(f"{'=' * 60}\n")
+        logger.info("=" * 60)
+        logger.info("启动多币种价格监控 (WebSocket 模式)")
+        logger.info("=" * 60)
+        logger.info(f"监控币种: {len(self.monitors)} 个")
+        logger.info("连接方式: WebSocket 实时推送")
+        logger.info("=" * 60)
 
         ws_task = None
         shutdown_task = None
@@ -452,6 +442,7 @@ class WebSocketMultiCoinMonitor:
                 self._restore_signal_handlers()
                 if self.stablecoin_client is not None:
                     await self.stablecoin_client.close()
+                self.notifier.close()
 
             if cancellation_error is not None:
                 raise cancellation_error

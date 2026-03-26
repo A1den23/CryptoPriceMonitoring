@@ -119,6 +119,8 @@ docker compose down
 | `LOG_LEVEL` | 日志级别（`DEBUG/INFO/WARNING/ERROR`） | `INFO` |
 | `TIMEZONE` | 时区（如 `Asia/Shanghai`, `UTC`, `America/New_York`） | `Asia/Shanghai` |
 | `COIN_LIST` | 逗号分隔的币种名 | `BTC,ETH,SOL,USD1` |
+
+说明：`TIMEZONE` 优先使用 `zoneinfo` 解析；若运行环境缺少对应时区数据，则会退回到 fixed-offset fallback。该 fallback 为近似行为，DST（夏令时）切换期间可能不完全准确。
 | `MILESTONE_ALERT_COOLDOWN_SECONDS` | 里程碑告警冷却（秒） | 600 |
 | `VOLATILITY_ALERT_COOLDOWN_SECONDS` | 波动告警冷却（秒） | 60 |
 | `VOLUME_ALERT_COOLDOWN_SECONDS` | 成交量告警冷却（秒） | 5 |

@@ -6,7 +6,6 @@ import asyncio
 import math
 from collections import deque
 from collections.abc import Callable
-from html import escape
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -19,6 +18,12 @@ from common.utils import (
     get_coin_display_name,
     get_coin_emoji,
     now_in_configured_timezone,
+)
+
+from .alerts import (
+    render_milestone_alert,
+    render_volatility_alert,
+    render_volume_alert,
 )
 
 
@@ -179,14 +184,11 @@ class PriceMonitor:
 
         now = now_in_configured_timezone()
 
-        direction_text = "向上 ↑" if is_up else "向下 ↓"
-        safe_symbol = escape(self.config.symbol)
-        message = (
-            f"🎉🎉【价格里程碑】🎉🎉\n"
-            f"🪙 {safe_symbol}\n"
-            f"💰 价格: {format_price(current_price)}\n"
-            f"{direction} 突破方向: {direction_text}\n"
-            f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}"
+        message = render_milestone_alert(
+            symbol=self.config.symbol,
+            current_price=current_price,
+            is_up=is_up,
+            current_time=now,
         )
 
         def _mark_sent() -> None:
@@ -337,20 +339,16 @@ class PriceMonitor:
         current_time = now_in_configured_timezone()
         change = current_price - self.price_history[0].price
         change_percent = (change / self.price_history[0].price) * 100
-        direction = "📈" if change > 0 else "📉"
         coin = get_coin_display_name(self.config.symbol)
 
-        safe_symbol = escape(self.config.symbol)
-        message = (
-            f"⚠️⚠️【波动警报】⚠️⚠️\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"🪙 {safe_symbol}\n"
-            f"💰 当前: {format_price(current_price)}\n"
-            f"📊 时间窗口: {self.config.volatility_window}s ({len(self.price_history)} pts)\n"
-            f"⚡️ 触发指标: {', '.join(reasons)}\n"
-            f"{direction} 净变化: {change_percent:+.2f}%\n"
-            f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"━━━━━━━━━━━━━━━━━"
+        message = render_volatility_alert(
+            symbol=self.config.symbol,
+            current_price=current_price,
+            volatility_window=self.config.volatility_window,
+            sample_count=len(self.price_history),
+            reasons=reasons,
+            change_percent=change_percent,
+            current_time=current_time,
         )
         log_reasons = (
             ", ".join(reasons)
@@ -436,21 +434,16 @@ class PriceMonitor:
             first_price = self.volume_history[0].price
             price_change = current_price - first_price
             price_change_pct = (price_change / first_price) * 100 if first_price > 0 else 0
-            direction = "📈" if price_change > 0 else "📉"
-
-            safe_symbol = escape(self.config.symbol)
-            message = (
-                f"🚨🚨【成交量异常警报】🚨🚨\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🪙 {safe_symbol}\n"
-                f"💰 当前价格: {format_price(current_price)}\n"
-                f"{direction} 价格变化: {price_change_pct:+.2f}%\n"
-                f"📊 成交量暴增: {volume_multiplier:.1f}x\n"
-                f"📈 当前成交量: {current_volume:,.0f}\n"
-                f"📊 基准成交量: {avg_volume:,.0f}\n"
-                f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"━━━━━━━━━━━━━━━━━"
+            message = render_volume_alert(
+                symbol=self.config.symbol,
+                current_price=current_price,
+                price_change_pct=price_change_pct,
+                volume_multiplier=volume_multiplier,
+                current_volume=current_volume,
+                avg_volume=avg_volume,
+                current_time=current_time,
             )
+
             def _mark_sent() -> None:
                 logger.info(
                     f"[{coin}] Volume anomaly detected: {volume_multiplier:.1f}x "

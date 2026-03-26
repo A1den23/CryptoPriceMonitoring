@@ -3,10 +3,11 @@ Logging utilities for Crypto Price Monitoring Bot
 """
 
 import logging
-import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Union
+
+from .config import get_configured_log_level_name, is_debug_mode_enabled
 
 
 DEFAULT_LOG_MAX_BYTES = 1_048_576
@@ -15,18 +16,20 @@ DEFAULT_LOG_BACKUP_COUNT = 3
 
 def _resolve_log_level(level: Union[int, str, None]) -> int:
     """Resolve log level from explicit value or LOG_LEVEL/DEBUG env."""
+    def _resolve_name(name: str) -> int:
+        resolved = getattr(logging, name, None)
+        return resolved if isinstance(resolved, int) else logging.INFO
+
     if level is not None:
         if isinstance(level, str):
-            name = level.strip().upper()
-            return logging._nameToLevel.get(name, logging.INFO)
+            return _resolve_name(level.strip().upper())
         return level
 
-    env_level = os.getenv("LOG_LEVEL")
+    env_level = get_configured_log_level_name()
     if env_level:
-        name = env_level.strip().upper()
-        return logging._nameToLevel.get(name, logging.INFO)
+        return _resolve_name(env_level.strip().upper())
 
-    if os.getenv("DEBUG", "false").lower() == "true":
+    if is_debug_mode_enabled():
         return logging.DEBUG
 
     return logging.INFO

@@ -13,6 +13,7 @@ import websockets
 
 from ..logging import logger
 from ..utils import get_configured_timezone
+from .websocket_parser import parse_kline_message, parse_ticker_message
 
 
 class ConnectionState(Enum):
@@ -106,46 +107,6 @@ class BinanceWebSocketClient:
         """Get current time in configured timezone."""
         return datetime.now(get_configured_timezone())
 
-    def _parse_ticker_message(self, data: dict) -> tuple[str, float]:
-        """Parse Binance ticker message."""
-        try:
-            # Combined stream format
-            if "stream" in data and "data" in data:
-                symbol = data["data"]["s"]
-                price = float(data["data"]["c"])
-            # Single stream format
-            else:
-                symbol = data["s"]
-                price = float(data["c"])
-
-            return symbol, price
-        except (KeyError, ValueError, TypeError) as e:
-            logger.error(f"Failed to parse ticker message: {e}")
-            raise
-
-    def _parse_kline_message(self, data: dict) -> tuple[str, float, float, bool] | None:
-        """Parse Binance kline message."""
-        try:
-            event = data["data"] if "stream" in data and "data" in data else data
-            if event.get("e") != "kline":
-                return None
-
-            kline = event["k"]
-            symbol = kline.get("s") or event.get("s")
-            if not isinstance(symbol, str) or not self._VALID_SYMBOL_PATTERN.match(symbol):
-                raise ValueError("Kline message missing valid symbol")
-
-            return (
-                symbol,
-                float(kline["c"]),
-                float(kline["v"]),
-                bool(kline["x"]),
-            )
-
-        except (KeyError, ValueError, TypeError) as e:
-            logger.error(f"Failed to parse kline message: {e}")
-            return None
-
     async def _message_handler(self):
         """Handle incoming WebSocket messages"""
         logger.info("Message handler started")
@@ -176,8 +137,9 @@ class BinanceWebSocketClient:
                     # Ticker update
                     elif event_type == "24hrTicker" or inner_event == "24hrTicker":
                         try:
-                            symbol, price = self._parse_ticker_message(data)
-                        except (KeyError, ValueError, TypeError):
+                            symbol, price = parse_ticker_message(data)
+                        except (KeyError, ValueError, TypeError) as e:
+                            logger.error(f"Failed to parse ticker message: {e}")
                             continue
 
                         # Update statistics
@@ -195,7 +157,11 @@ class BinanceWebSocketClient:
                     # Kline update
                     elif event_type == "kline" or inner_event == "kline":
                         if self.on_kline_callback:
-                            kline_data = self._parse_kline_message(data)
+                            try:
+                                kline_data = parse_kline_message(data)
+                            except (KeyError, ValueError, TypeError) as e:
+                                logger.error(f"Failed to parse kline message: {e}")
+                                continue
                             if kline_data and kline_data[3]:  # is_closed
                                 symbol, price, volume, _ = kline_data
 

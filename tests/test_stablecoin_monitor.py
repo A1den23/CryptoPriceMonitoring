@@ -6,53 +6,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
+from tests.stubs import install_dependency_stubs
+
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_ROOT))
 
 
-def _install_dependency_stubs() -> None:
-    if "aiohttp" not in sys.modules:
-        aiohttp = types.ModuleType("aiohttp")
-
-        class ClientError(Exception):
-            pass
-
-        class ClientTimeout:
-            def __init__(self, total=None) -> None:
-                self.total = total
-
-        class DummyResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            async def json(self) -> dict:
-                return {"peggedAssets": []}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-                return None
-
-        class ClientSession:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            def get(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse()
-
-            async def close(self) -> None:
-                return None
-
-        aiohttp.ClientError = ClientError
-        aiohttp.ClientSession = ClientSession
-        aiohttp.ClientTimeout = ClientTimeout
-        sys.modules["aiohttp"] = aiohttp
-
-
-_install_dependency_stubs()
+install_dependency_stubs()
 
 from common.clients.defillama import StablecoinSnapshot
 from monitor.stablecoin_depeg_monitor import StablecoinDepegMonitor

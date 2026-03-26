@@ -19,6 +19,11 @@ logging_utils = importlib.import_module("common.logging")
 
 
 class SetupLoggingTests(unittest.TestCase):
+    def test_setup_logging_uses_config_helper_values_for_env_resolution(self) -> None:
+        with patch.object(logging_utils, "get_configured_log_level_name", return_value="WARN", create=True), \
+             patch.object(logging_utils, "is_debug_mode_enabled", return_value=False, create=True):
+            self.assertEqual(logging_utils._resolve_log_level(None), logging.WARNING)
+
     def _close_handlers(self, handlers: list[logging.Handler]) -> None:
         for handler in handlers:
             handler.close()

@@ -93,40 +93,48 @@ def test_volatility_alert():
     print("\n=== 测试波动监控 ===\n")
 
     config = ConfigManager()
-    notifier = TelegramNotifier()
+    notifier = TelegramNotifier(
+        bot_token=config.telegram_bot_token,
+        chat_id=config.telegram_chat_id,
+    )
     enabled_coins = config.get_enabled_coins()
 
-    with BinancePriceFetcher() as fetcher:
-        for coin_config in enabled_coins:
-            try:
-                price = fetcher.get_current_price(coin_config.symbol)
-                if price:
-                    fake_high_price = price * 1.05
-                    fake_low_price = price * 0.98
-                    fake_volatility = ((fake_high_price - fake_low_price) / fake_low_price) * 100
+    try:
+        with BinancePriceFetcher() as fetcher:
+            for coin_config in enabled_coins:
+                try:
+                    price = fetcher.get_current_price(coin_config.symbol)
+                    if price:
+                        fake_high_price = price * 1.05
+                        fake_low_price = price * 0.98
+                        fake_volatility = ((fake_high_price - fake_low_price) / fake_low_price) * 100
 
-                    coin = get_coin_display_name(coin_config.symbol)
+                        coin = get_coin_display_name(coin_config.symbol)
 
-                    print(f"测试 {coin}...")
-                    print(f"  当前价格: {format_price(price)}")
-                    print(f"  波动阈值: {coin_config.volatility_percent}%")
-                    print(f"  模拟波动: {fake_volatility:.2f}%")
+                        print(f"测试 {coin}...")
+                        print(f"  当前价格: {format_price(price)}")
+                        print(f"  波动阈值: {coin_config.volatility_percent}%")
+                        print(f"  模拟波动: {fake_volatility:.2f}%")
 
-                    message = (
-                        f"🧪 <b>测试告警 - 波动监控</b>\n"
-                        f"🪙 {coin_config.symbol}\n"
-                        f"💰 当前价格: {format_price(price)}\n"
-                        f"📊 告警阈值: {coin_config.volatility_percent}% / {coin_config.volatility_window}秒\n"
-                        f"✅ 波动监控已激活\n"
-                        f"📈 模拟告警: {fake_volatility:.2f}% 将触发告警!\n"
-                        f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                    notifier.send_message(message)
-                    print("  ✓ 测试告警已发送!\n")
-            except Exception as e:
-                logger.error(f"Error while testing {coin_config.coin_name}: {e}")
+                        message = (
+                            f"🧪 <b>测试告警 - 波动监控</b>\n"
+                            f"🪙 {coin_config.symbol}\n"
+                            f"💰 当前价格: {format_price(price)}\n"
+                            f"📊 告警阈值: {coin_config.volatility_percent}% / {coin_config.volatility_window}秒\n"
+                            f"✅ 波动监控已激活\n"
+                            f"📈 模拟告警: {fake_volatility:.2f}% 将触发告警!\n"
+                            f"⏱️ {now_in_configured_timezone().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        notifier.send_message(message)
+                        print("  ✓ 测试告警已发送!\n")
+                except Exception as e:
+                    logger.error(f"Error while testing {coin_config.coin_name}: {e}")
 
-    print("测试完成! 请检查 Telegram 中的测试告警。\n")
+        print("测试完成! 请检查 Telegram 中的测试告警。\n")
+    finally:
+        close = getattr(notifier, "close", None)
+        if callable(close):
+            close()
 
 
 def show_status():

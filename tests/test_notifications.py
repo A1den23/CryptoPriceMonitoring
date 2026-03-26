@@ -1,9 +1,10 @@
 import logging
 import sys
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+from tests.stubs import install_dependency_stubs
 
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[1]
@@ -11,53 +12,20 @@ if str(WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_ROOT))
 
 
-def _install_dependency_stubs() -> None:
-    if "tenacity" not in sys.modules:
-        tenacity = types.ModuleType("tenacity")
-
-        def retry(*args, **kwargs):
-            def decorator(func):
-                return func
-            return decorator
-
-        tenacity.retry = retry
-        tenacity.retry_if_exception_type = lambda *args, **kwargs: None
-        tenacity.stop_after_attempt = lambda *args, **kwargs: None
-        tenacity.wait_exponential = lambda *args, **kwargs: None
-        sys.modules["tenacity"] = tenacity
-
-    if "requests" not in sys.modules:
-        requests = types.ModuleType("requests")
-
-        class RequestException(Exception):
-            pass
-
-        class Session:
-            def mount(self, *args, **kwargs) -> None:
-                return None
-
-            def post(self, *args, **kwargs):
-                raise NotImplementedError
-
-            def close(self) -> None:
-                return None
-
-        class HTTPAdapter:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        requests.Session = Session
-        requests.exceptions = types.SimpleNamespace(RequestException=RequestException)
-        requests.adapters = types.SimpleNamespace(HTTPAdapter=HTTPAdapter)
-        sys.modules["requests"] = requests
-
-
-_install_dependency_stubs()
+install_dependency_stubs()
 
 from common.notifications import TelegramNotifier
 
 
 class TelegramNotifierTests(unittest.TestCase):
+    def test_close_closes_underlying_http_session(self) -> None:
+        notifier = TelegramNotifier(bot_token="token", chat_id="chat")
+
+        with patch.object(notifier.session, "close") as mock_close:
+            notifier.close()
+
+        mock_close.assert_called_once_with()
+
     def test_send_message_returns_false_when_telegram_json_ok_is_false(self) -> None:
         notifier = TelegramNotifier(bot_token="token", chat_id="chat")
         response = Mock()
