@@ -60,9 +60,6 @@ htmlcov/
 .tox/
 .nox/
 
-# Docker
-.dockerignore
-
 # Data files
 *.db
 *.sqlite

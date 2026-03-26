@@ -175,7 +175,10 @@ class BinanceWebSocketClient:
 
                     # Ticker update
                     elif event_type == "24hrTicker" or inner_event == "24hrTicker":
-                        symbol, price = self._parse_ticker_message(data)
+                        try:
+                            symbol, price = self._parse_ticker_message(data)
+                        except (KeyError, ValueError, TypeError):
+                            continue
 
                         # Update statistics
                         self.messages_received += 1

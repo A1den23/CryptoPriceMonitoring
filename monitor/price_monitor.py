@@ -5,6 +5,8 @@ Price monitoring primitives and alert evaluation logic.
 import asyncio
 import math
 from collections import deque
+from collections.abc import Callable
+from html import escape
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -125,15 +127,19 @@ class PriceMonitor:
         logger.debug(f"[{coin}] Global cooldown active ({time_since_last:.0f}s ago)")
         return True
 
-    def _on_notification_done(self, task: asyncio.Task) -> None:
-        """Cleanup completed async notification task and log errors."""
+    def _on_notification_done(self, task: asyncio.Task[bool]) -> None:
+        """Cleanup completed async notification task and log failures."""
         self._notification_tasks.discard(task)
         if task.cancelled():
             return
         try:
-            task.result()
+            sent = task.result()
         except Exception:
             logger.exception(f"[{self.config.symbol}] Failed to send Telegram notification")
+            return
+
+        if not sent:
+            logger.error(f"[{self.config.symbol}] Telegram notification send returned false")
 
     async def flush_notification_tasks(self) -> None:
         """Wait for any queued notification tasks to finish."""
@@ -142,17 +148,27 @@ class PriceMonitor:
 
         await asyncio.gather(*tuple(self._notification_tasks), return_exceptions=True)
 
-    def _send_notification(self, message: str) -> None:
+    def _send_notification(self, message: str, on_success: Callable[[], None] | None = None) -> bool:
         """Send notification without blocking the event loop."""
+        def _handle_success(sent: bool) -> bool:
+            if sent and on_success is not None:
+                on_success()
+            return sent
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self.notifier.send_message(message)
-            return
+            sent = self.notifier.send_message(message)
+            return _handle_success(sent)
 
-        task = loop.create_task(asyncio.to_thread(self.notifier.send_message, message))
+        async def _send_async() -> bool:
+            sent = await asyncio.to_thread(self.notifier.send_message, message)
+            return _handle_success(sent)
+
+        task = loop.create_task(_send_async())
         self._notification_tasks.add(task)
         task.add_done_callback(self._on_notification_done)
+        return True
 
     def _send_milestone_notification(self, current_price: float, current_milestone: float):
         """Send milestone notification and update tracking."""
@@ -162,21 +178,24 @@ class PriceMonitor:
         direction = "📈" if is_up else "📉"
 
         now = now_in_configured_timezone()
-        self.last_price = current_price
-        self.last_milestone_notification_time = now
 
         direction_text = "向上 ↑" if is_up else "向下 ↓"
+        safe_symbol = escape(self.config.symbol)
         message = (
             f"🎉🎉【价格里程碑】🎉🎉\n"
-            f"🪙 {self.config.symbol}\n"
+            f"🪙 {safe_symbol}\n"
             f"💰 价格: {format_price(current_price)}\n"
             f"{direction} 突破方向: {direction_text}\n"
             f"⏱️ {now.strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        self._send_notification(message)
 
-        milestone_str = format_threshold(current_milestone)
-        logger.info(f"[{coin}] Milestone crossed: {milestone_str}")
+        def _mark_sent() -> None:
+            self.last_price = current_price
+            self.last_milestone_notification_time = now
+            milestone_str = format_threshold(current_milestone)
+            logger.info(f"[{coin}] Milestone crossed: {milestone_str}")
+
+        self._send_notification(message, on_success=_mark_sent)
 
     def check_integer_milestone(self, current_price: float) -> bool:
         """Check if price reached an integer milestone using crossing detection."""
@@ -321,10 +340,11 @@ class PriceMonitor:
         direction = "📈" if change > 0 else "📉"
         coin = get_coin_display_name(self.config.symbol)
 
+        safe_symbol = escape(self.config.symbol)
         message = (
             f"⚠️⚠️【波动警报】⚠️⚠️\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"🪙 {self.config.symbol}\n"
+            f"🪙 {safe_symbol}\n"
             f"💰 当前: {format_price(current_price)}\n"
             f"📊 时间窗口: {self.config.volatility_window}s ({len(self.price_history)} pts)\n"
             f"⚡️ 触发指标: {', '.join(reasons)}\n"
@@ -332,7 +352,6 @@ class PriceMonitor:
             f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"━━━━━━━━━━━━━━━━━"
         )
-        self._send_notification(message)
         log_reasons = (
             ", ".join(reasons)
             .replace("标准差", "std dev")
@@ -340,9 +359,12 @@ class PriceMonitor:
             .replace("区间波动", "range volatility")
             .replace("加速度", "acceleration")
         )
-        logger.info(f"[{coin}] High volatility detected - {log_reasons}")
 
-        self.last_volatility_notification_time = current_time
+        def _mark_sent() -> None:
+            logger.info(f"[{coin}] High volatility detected - {log_reasons}")
+            self.last_volatility_notification_time = current_time
+
+        self._send_notification(message, on_success=_mark_sent)
 
     def check_volatility(self, current_price: float) -> str | None:
         """Check price history for volatility thresholds."""
@@ -416,10 +438,11 @@ class PriceMonitor:
             price_change_pct = (price_change / first_price) * 100 if first_price > 0 else 0
             direction = "📈" if price_change > 0 else "📉"
 
+            safe_symbol = escape(self.config.symbol)
             message = (
                 f"🚨🚨【成交量异常警报】🚨🚨\n"
                 f"━━━━━━━━━━━━━━━━━\n"
-                f"🪙 {self.config.symbol}\n"
+                f"🪙 {safe_symbol}\n"
                 f"💰 当前价格: {format_price(current_price)}\n"
                 f"{direction} 价格变化: {price_change_pct:+.2f}%\n"
                 f"📊 成交量暴增: {volume_multiplier:.1f}x\n"
@@ -428,32 +451,35 @@ class PriceMonitor:
                 f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"━━━━━━━━━━━━━━━━━"
             )
-            self._send_notification(message)
-            logger.info(
-                f"[{coin}] Volume anomaly detected: {volume_multiplier:.1f}x "
-                f"(current:{current_volume:,.0f}, avg:{avg_volume:,.0f})"
-            )
+            def _mark_sent() -> None:
+                logger.info(
+                    f"[{coin}] Volume anomaly detected: {volume_multiplier:.1f}x "
+                    f"(current:{current_volume:,.0f}, avg:{avg_volume:,.0f})"
+                )
+                self.last_volume_alert_time = current_time
 
-            self.last_volume_alert_time = current_time
+            self._send_notification(message, on_success=_mark_sent)
             return f"V:{volume_multiplier:.1f}x🚨"
 
         return f"V:{volume_multiplier:.1f}x"
 
     def check(self, current_price: float) -> str | None:
         """Check price and return the formatted terminal output line."""
+        should_emit_output = True
         if self.last_processed_price is not None:
             price_diff = abs(current_price - self.last_processed_price)
             base_min_change = 0.001 if current_price >= 1 else 0.0001
             min_change = min(base_min_change, self.config.integer_threshold)
-
-            if price_diff < min_change:
-                return None
-
-        self.last_processed_price = current_price
+            should_emit_output = price_diff >= min_change
 
         coin = get_coin_display_name(self.config.symbol)
         milestone_alert = self.check_integer_milestone(current_price)
         volatility_info = self.check_volatility(current_price)
+
+        if not should_emit_output:
+            return None
+
+        self.last_processed_price = current_price
 
         emoji = get_coin_emoji(coin)
         output = f"{emoji} [{coin}] {format_price(current_price)}"

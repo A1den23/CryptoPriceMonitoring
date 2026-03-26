@@ -58,12 +58,13 @@ def _render_all_prices_message(
         return f"{message}❌ 当前没有启用任何币种！\n\n⏱️ {self._format_timestamp()}"
 
     for coin_config in enabled_coins:
+        safe_coin_name = escape(coin_config.coin_name)
         price = prices.get(coin_config.symbol)
         if price is not None:
             emoji = get_coin_emoji(coin_config.coin_name)
-            message += f"{emoji} <b>{coin_config.coin_name}</b>: {format_price(price)}\n"
+            message += f"{emoji} <b>{safe_coin_name}</b>: {format_price(price)}\n"
         else:
-            message += f"❌ <b>{coin_config.coin_name}</b>: 获取失败\n"
+            message += f"❌ <b>{safe_coin_name}</b>: 获取失败\n"
 
     return f"{message}\n⏱️ {self._format_timestamp()}"
 
@@ -122,7 +123,9 @@ def render_help_message(enabled_coins: list[CoinConfig]) -> str:
     )
 
     for coin_config in enabled_coins:
-        help_message += f"  • {coin_config.coin_name}: {coin_config.symbol}\n"
+        safe_coin_name = escape(coin_config.coin_name)
+        safe_symbol = escape(coin_config.symbol)
+        help_message += f"  • {safe_coin_name}: {safe_symbol}\n"
 
     return help_message
 
@@ -139,14 +142,16 @@ def render_status_message(
         return f"{status_message}❌ 当前没有启用任何币种！\n\n⏱️ {self._format_timestamp()}"
 
     for coin_config in enabled_coins:
+        safe_coin_name = escape(coin_config.coin_name)
+        safe_symbol = escape(coin_config.symbol)
         price = prices.get(coin_config.symbol)
         if price is None:
-            status_message += f"❌ <b>{coin_config.coin_name}</b>：获取数据失败\n\n"
+            status_message += f"❌ <b>{safe_coin_name}</b>：获取数据失败\n\n"
             continue
 
         emoji = get_coin_emoji(coin_config.coin_name)
         status_message += (
-            f"{emoji} <b>{coin_config.coin_name}</b> ({coin_config.symbol})\n"
+            f"{emoji} <b>{safe_coin_name}</b> ({safe_symbol})\n"
             f"   💰 当前价格：{format_price(price)}\n"
             f"   📍 里程碑：每 {self._format_threshold(coin_config)}\n"
             f"   📊 波动告警：{coin_config.volatility_percent}%/{coin_config.volatility_window}s\n\n"
@@ -156,22 +161,6 @@ def render_status_message(
     status_message += f"\n⌛ 运行时间：{uptime}"
     status_message += f"\n⏱️ {self._format_timestamp()}"
     return status_message
-
-
-def render_price_update(
-    coin_name: str,
-    symbol: str,
-    price: float,
-    timestamp: str,
-) -> str:
-    """Build the single-coin price update message."""
-    emoji = get_coin_emoji(coin_name)
-    return (
-        f"{emoji} <b>{coin_name}</b> 价格更新\n"
-        f"💰 当前价格：{format_price(price)}\n"
-        f"📈 交易对：{symbol}\n"
-        f"⏱️ {timestamp}"
-    )
 
 
 def render_price_picker_message() -> str:
@@ -187,10 +176,12 @@ def render_price_detail_message(
     """Build the detailed /price coin message."""
     emoji = get_coin_emoji(coin_config.coin_name)
     enabled_text = "已启用" if coin_config.enabled else "未启用"
+    safe_coin_name = escape(coin_config.coin_name)
+    safe_symbol = escape(coin_config.symbol)
     return (
-        f"{emoji} <b>{coin_config.coin_name}</b> 价格详情\n"
+        f"{emoji} <b>{safe_coin_name}</b> 价格详情\n"
         f"💰 当前价格：{format_price(price)}\n"
-        f"📈 交易对：{coin_config.symbol}\n"
+        f"📈 交易对：{safe_symbol}\n"
         f"📍 里程碑：每 {format_threshold(coin_config.integer_threshold)}\n"
         f"📊 波动告警：{coin_config.volatility_percent}%/{coin_config.volatility_window}s\n"
         f"⚙️ 状态：{enabled_text}\n"

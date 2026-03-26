@@ -31,7 +31,7 @@ def _install_dependency_stubs() -> None:
         telegram = types.ModuleType("telegram")
 
         class Update:
-            pass
+            ALL_TYPES = object()
 
         class InlineKeyboardButton:
             def __init__(self, text: str, callback_data: str) -> None:
@@ -118,6 +118,27 @@ class PriceMessageRenderingTests(unittest.TestCase):
             "⚙️ 状态：已启用\n"
             "⏱️ 2026-03-25 10:30:45",
         )
+
+    def test_render_price_detail_message_escapes_html_sensitive_fields(self) -> None:
+        coin_config = CoinConfig(
+            coin_name="BTC<1>",
+            enabled=True,
+            symbol="BTC&USDT",
+            integer_threshold=1000.0,
+            volatility_percent=3.0,
+            volatility_window=60,
+            volume_alert_multiplier=10.0,
+        )
+
+        message = render_price_detail_message(
+            coin_config=coin_config,
+            price=95123.456,
+            timestamp="2026-03-25 10:30:45",
+        )
+
+        self.assertIn("BTC&lt;1&gt;", message)
+        self.assertIn("BTC&amp;USDT", message)
+        self.assertNotIn("<1>", message)
 
 
 if __name__ == "__main__":

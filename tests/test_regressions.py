@@ -451,6 +451,44 @@ class PriceMonitorRegressionTests(unittest.TestCase):
         self.assertEqual(len(notifier.messages), 1)
         self.assertIn("价格里程碑", notifier.messages[0])
 
+    def test_monitor_notifications_escape_symbol_for_html_parse_mode(self) -> None:
+        notifier = StubNotifier()
+        config = CoinConfig(
+            coin_name="BTC",
+            enabled=True,
+            symbol="BTC<USDT>",
+            integer_threshold=1000.0,
+            volatility_percent=3.0,
+            volatility_window=180,
+            volume_alert_multiplier=10.0,
+        )
+        price_monitor = PriceMonitor(config, notifier)
+
+        with patch.object(
+            monitor.price_monitor,
+            "now_in_configured_timezone",
+            return_value=datetime(2026, 3, 6, tzinfo=timezone.utc),
+        ):
+            price_monitor._send_milestone_notification(101000.0, 101000.0)
+            price_monitor.price_history.extend(
+                [
+                    monitor.price_monitor.PriceData(100000.0, datetime(2026, 3, 6, tzinfo=timezone.utc)),
+                    monitor.price_monitor.PriceData(101000.0, datetime(2026, 3, 6, tzinfo=timezone.utc)),
+                ]
+            )
+            price_monitor._send_volatility_alert(101000.0, ["区间波动: 1.00%"])
+            price_monitor.volume_history.extend(
+                [
+                    monitor.price_monitor.VolumeData(100000.0, 100.0, datetime(2026, 3, 6, tzinfo=timezone.utc)),
+                    monitor.price_monitor.VolumeData(100500.0, 100.0, datetime(2026, 3, 6, tzinfo=timezone.utc)),
+                ]
+            )
+            price_monitor.check_volume_anomaly(101000.0, 2000.0)
+
+        self.assertIn("BTC&lt;USDT&gt;", notifier.messages[0])
+        self.assertIn("BTC&lt;USDT&gt;", notifier.messages[1])
+        self.assertIn("BTC&lt;USDT&gt;", notifier.messages[2])
+
     def test_cumulative_volatility_tracking_updates_during_cooldown(self) -> None:
         notifier = StubNotifier()
         config = CoinConfig(
@@ -543,6 +581,203 @@ class PriceMonitorRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(self._count_messages(notifier, "波动警报"), 2)
+
+    def test_small_price_changes_still_update_volatility_window(self) -> None:
+        notifier = StubNotifier()
+        price_monitor = self._build_price_monitor(notifier, volatility_percent=0.2, volatility_window=120)
+
+        outputs = self._replay_price_points(
+            price_monitor,
+            [
+                (0, 1.0000),
+                (10, 1.00005),
+                (20, 1.00010),
+                (30, 1.00015),
+            ],
+        )
+
+        self.assertGreaterEqual(len(price_monitor.price_history), 3)
+        self.assertTrue(any(output is None for output in outputs))
+
+    def test_small_price_changes_preserve_full_volatility_window_for_later_alerts(self) -> None:
+        notifier = StubNotifier()
+        price_monitor = self._build_price_monitor(notifier, volatility_percent=0.2, volatility_window=120)
+
+        outputs = self._replay_price_points(
+            price_monitor,
+            [
+                (0, 1.0000),
+                (10, 1.00005),
+                (20, 1.00010),
+                (30, 1.00015),
+                (40, 1.00450),
+            ],
+        )
+
+        self.assertTrue(any(output is None for output in outputs[:-1]))
+        self.assertIsNotNone(outputs[-1])
+        self.assertIn("📊", outputs[-1])
+        self.assertEqual(self._count_messages(notifier, "波动警报"), 1)
+
+    def test_milestone_send_failure_does_not_advance_notification_state(self) -> None:
+        class FailingNotifier(StubNotifier):
+            def send_message(self, message: str) -> bool:
+                raise RuntimeError("telegram unavailable")
+
+        notifier = FailingNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.last_price = 100_000.0
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "exception"):
+                price_monitor._send_milestone_notification(101_000.0, 101_000.0)
+                await price_monitor.flush_notification_tasks()
+
+        asyncio.run(exercise())
+
+        self.assertEqual(price_monitor.last_price, 100_000.0)
+        self.assertIsNone(price_monitor.last_milestone_notification_time)
+
+    def test_volatility_send_failure_does_not_advance_cooldown(self) -> None:
+        class FailingNotifier(StubNotifier):
+            def send_message(self, message: str) -> bool:
+                raise RuntimeError("telegram unavailable")
+
+        notifier = FailingNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.price_history.extend(
+            [
+                monitor.price_monitor.PriceData(100_000.0, current_time),
+                monitor.price_monitor.PriceData(101_000.0, current_time),
+            ]
+        )
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "exception"):
+                price_monitor._send_volatility_alert(101_000.0, ["区间波动: 1.00%"])
+                await price_monitor.flush_notification_tasks()
+
+        asyncio.run(exercise())
+
+        self.assertIsNone(price_monitor.last_volatility_notification_time)
+
+    def test_volume_send_failure_does_not_advance_cooldown(self) -> None:
+        class FailingNotifier(StubNotifier):
+            def send_message(self, message: str) -> bool:
+                raise RuntimeError("telegram unavailable")
+
+        notifier = FailingNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.volume_history.extend(
+            [
+                monitor.price_monitor.VolumeData(100_000.0, 100.0, current_time),
+                monitor.price_monitor.VolumeData(100_500.0, 100.0, current_time),
+            ]
+        )
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "exception"):
+                price_monitor.check_volume_anomaly(101_000.0, 20_000.0)
+                await price_monitor.flush_notification_tasks()
+
+        asyncio.run(exercise())
+
+        self.assertIsNone(price_monitor.last_volume_alert_time)
+
+    def test_milestone_false_send_result_does_not_advance_notification_state(self) -> None:
+        class FalseNotifier(StubNotifier):
+            def send_message(self, message: str) -> bool:
+                return False
+
+        notifier = FalseNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.last_price = 100_000.0
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "error"):
+                price_monitor._send_milestone_notification(101_000.0, 101_000.0)
+                await price_monitor.flush_notification_tasks()
+
+        asyncio.run(exercise())
+
+        self.assertEqual(price_monitor.last_price, 100_000.0)
+        self.assertIsNone(price_monitor.last_milestone_notification_time)
+
+    def test_volatility_false_send_result_does_not_advance_cooldown(self) -> None:
+        class FalseNotifier(StubNotifier):
+            def send_message(self, message: str) -> bool:
+                return False
+
+        notifier = FalseNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.price_history.extend(
+            [
+                monitor.price_monitor.PriceData(100_000.0, current_time),
+                monitor.price_monitor.PriceData(101_000.0, current_time),
+            ]
+        )
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "error"):
+                price_monitor._send_volatility_alert(101_000.0, ["区间波动: 1.00%"])
+                await price_monitor.flush_notification_tasks()
+
+        asyncio.run(exercise())
+
+        self.assertIsNone(price_monitor.last_volatility_notification_time)
+
+    def test_volume_false_send_result_does_not_advance_cooldown(self) -> None:
+        class FalseNotifier(StubNotifier):
+            def send_message(self, message: str) -> bool:
+                return False
+
+        notifier = FalseNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.volume_history.extend(
+            [
+                monitor.price_monitor.VolumeData(100_000.0, 100.0, current_time),
+                monitor.price_monitor.VolumeData(100_500.0, 100.0, current_time),
+            ]
+        )
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "error"):
+                price_monitor.check_volume_anomaly(101_000.0, 20_000.0)
+                await price_monitor.flush_notification_tasks()
+
+        asyncio.run(exercise())
+
+        self.assertIsNone(price_monitor.last_volume_alert_time)
 
 
 class ConfigManagerRegressionTests(unittest.TestCase):
@@ -1384,6 +1619,33 @@ class BinanceWebSocketClientRegressionTests(unittest.TestCase):
 
         mock_error.assert_any_call("Binance error: {'code': 400, 'msg': 'bad request'}")
 
+    def test_bad_ticker_payload_is_logged_and_skipped_without_reconnect(self) -> None:
+        received = []
+
+        async def on_price(symbol: str, price: float) -> None:
+            received.append((symbol, price))
+
+        client = monitor.BinanceWebSocketClient(["BTCUSDT"], on_price)
+        client.state = ConnectionState.CONNECTED
+        client.websocket = FakeAsyncIterableWebSocket([
+            '{"stream":"btcusdt@ticker","data":{"e":"24hrTicker","s":"BTCUSDT"}}',
+            '{"stream":"btcusdt@ticker","data":{"e":"24hrTicker","s":"BTCUSDT","c":"95123.45"}}',
+        ])
+        disconnects = []
+
+        async def on_disconnect(reason: str) -> None:
+            disconnects.append(reason)
+
+        client.on_disconnect_callback = on_disconnect
+
+        with patch("common.clients.websocket.logger.error") as mock_error:
+            asyncio.run(client._message_handler())
+
+        self.assertEqual(received, [("BTCUSDT", 95123.45)])
+        self.assertEqual(disconnects, ["Connection closed cleanly"])
+        self.assertEqual(client.state, ConnectionState.RECONNECTING)
+        mock_error.assert_any_call("Failed to parse ticker message: 'c'")
+
 
 class TelegramBotRegressionTests(unittest.TestCase):
     def test_run_async_cleans_up_when_initialize_fails_after_partial_setup(self) -> None:
@@ -1394,6 +1656,8 @@ class TelegramBotRegressionTests(unittest.TestCase):
         fake_fetcher = object()
         fetcher_context = FakeAsyncContextManager(fake_fetcher)
         heartbeat_task = FakeHeartbeatTask()
+        original_sigint = object()
+        original_sigterm = object()
 
         async def fail_initialize() -> None:
             application.initialized = True
@@ -1417,14 +1681,19 @@ class TelegramBotRegressionTests(unittest.TestCase):
             coro.close()
             return heartbeat_task
 
-        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler), \
+        with patch.object(bot.signal, "signal") as mock_signal, \
              patch("bot.app.AsyncBinancePriceFetcher", return_value=fetcher_context), \
              patch("bot.app.asyncio.create_task", side_effect=fake_create_task):
+            mock_signal.side_effect = [original_sigint, original_sigterm, None, None]
             telegram_bot = bot.TelegramBot(config)
             telegram_bot.application = application
 
             with self.assertRaisesRegex(RuntimeError, "initialize failed"):
-                asyncio.run(telegram_bot.run_async())
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(telegram_bot.run_async())
+                finally:
+                    loop.close()
 
         self.assertIs(telegram_bot.fetcher, fake_fetcher)
         self.assertTrue(fetcher_context.entered)
@@ -1437,6 +1706,15 @@ class TelegramBotRegressionTests(unittest.TestCase):
         application.updater.stop.assert_not_awaited()
         application.stop.assert_not_awaited()
         application.shutdown.assert_awaited_once_with()
+        self.assertEqual(
+            mock_signal.call_args_list,
+            [
+                unittest.mock.call(bot.signal.SIGINT, telegram_bot._signal_handler),
+                unittest.mock.call(bot.signal.SIGTERM, telegram_bot._signal_handler),
+                unittest.mock.call(bot.signal.SIGINT, original_sigint),
+                unittest.mock.call(bot.signal.SIGTERM, original_sigterm),
+            ],
+        )
 
     def test_run_async_cleans_up_when_startup_fails(self) -> None:
         config = types.SimpleNamespace(
@@ -1533,7 +1811,7 @@ class TelegramBotRegressionTests(unittest.TestCase):
 
         asyncio.run(telegram_bot.button_callback(update, None))
 
-        telegram_bot.send_price_update.assert_awaited_once_with(123, "MY_COIN", message=None)
+        telegram_bot.send_price_update.assert_awaited_once_with(123, "MY_COIN", message=query.message)
 
 
 class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):

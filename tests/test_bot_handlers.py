@@ -33,7 +33,7 @@ def _install_dependency_stubs() -> None:
         telegram = types.ModuleType("telegram")
 
         class Update:
-            pass
+            ALL_TYPES = object()
 
         class InlineKeyboardButton:
             def __init__(self, text: str, callback_data: str) -> None:
@@ -52,10 +52,40 @@ def _install_dependency_stubs() -> None:
     if "telegram.ext" not in sys.modules:
         telegram_ext = types.ModuleType("telegram.ext")
 
+        async def _async_noop(*args, **kwargs) -> None:
+            return None
+
+        class ApplicationBuilder:
+            def token(self, token: str):
+                return self
+
+            def connection_pool_size(self, size: int):
+                return self
+
+            def pool_timeout(self, timeout: float | None):
+                return self
+
+            def get_updates_connection_pool_size(self, size: int):
+                return self
+
+            def get_updates_pool_timeout(self, timeout: float | None):
+                return self
+
+            def build(self):
+                return types.SimpleNamespace(
+                    add_handler=lambda *args, **kwargs: None,
+                    bot=types.SimpleNamespace(send_message=_async_noop),
+                    updater=types.SimpleNamespace(start_polling=_async_noop, stop=_async_noop),
+                    initialize=_async_noop,
+                    start=_async_noop,
+                    stop=_async_noop,
+                    shutdown=_async_noop,
+                )
+
         class Application:
             @staticmethod
             def builder():
-                return None
+                return ApplicationBuilder()
 
         class CommandHandler:
             def __init__(self, *args, **kwargs) -> None:
@@ -77,7 +107,7 @@ def _install_dependency_stubs() -> None:
 
 _install_dependency_stubs()
 
-from bot.handlers import price_command, send_price_update
+from bot.handlers import button_callback, price_command, send_price_update
 from common.config import CoinConfig
 
 
@@ -214,6 +244,71 @@ class PriceCommandHandlerTests(unittest.TestCase):
         )
         self.assertIsNone(kwargs["message"])
         self.assertEqual(kwargs["reply_markup"].keyboard[0][0].callback_data, "price_BTC")
+
+    def test_send_price_update_uses_detail_view_copy(self) -> None:
+        handler_self = self._build_handler_self()
+
+        asyncio.run(send_price_update(handler_self, 789, "BTC"))
+
+        args, _kwargs = handler_self._send_or_edit_message.await_args
+        self.assertIn("价格详情", args[1])
+        self.assertIn("里程碑", args[1])
+        self.assertIn("波动告警", args[1])
+
+    def test_send_price_update_escapes_html_sensitive_fields(self) -> None:
+        coin_config = CoinConfig(
+            coin_name="BTC<1>",
+            enabled=True,
+            symbol="BTC&USDT",
+            integer_threshold=1000.0,
+            volatility_percent=3.0,
+            volatility_window=60,
+            volume_alert_multiplier=10.0,
+        )
+
+        handler_self = types.SimpleNamespace(
+            config=types.SimpleNamespace(get_coin_config=lambda coin_name: coin_config if coin_name == "BTC<1>" else None),
+            _get_price=AsyncMock(return_value=95123.456),
+            _send_or_edit_message=AsyncMock(),
+            _format_timestamp=lambda: "2026-03-25 10:30:45",
+            _build_price_keyboard=lambda coin_name: None,
+        )
+
+        asyncio.run(send_price_update(handler_self, 789, "BTC<1>"))
+
+        args, _kwargs = handler_self._send_or_edit_message.await_args
+        self.assertEqual(args[0], 789)
+        self.assertIn("BTC&lt;1&gt;", args[1])
+        self.assertIn("BTC&amp;USDT", args[1])
+        self.assertNotIn("<1>", args[1])
+
+    def test_button_callback_all_prices_edits_existing_message(self) -> None:
+        handler_self = self._build_handler_self()
+        handler_self._get_prices = AsyncMock(return_value={"BTCUSDT": 95123.456, "ETHUSDT": 3200.0})
+        handler_self._render_all_prices_message = lambda coins, prices: "ALL PRICES"
+
+        query_message = types.SimpleNamespace(chat_id=123, reply_text=AsyncMock())
+        query = types.SimpleNamespace(
+            data="all_prices",
+            answer=AsyncMock(),
+            message=query_message,
+        )
+        update = types.SimpleNamespace(callback_query=query)
+
+        asyncio.run(button_callback(handler_self, update, None))
+
+        handler_self._send_or_edit_message.assert_awaited_once_with(123, "ALL PRICES", message=query_message)
+        query_message.reply_text.assert_not_awaited()
+
+    def test_button_callback_price_refresh_reuses_original_message(self) -> None:
+        handler_self = self._build_handler_self()
+        query_message = types.SimpleNamespace(chat_id=123)
+        query = types.SimpleNamespace(data="price_BTC", answer=AsyncMock(), message=query_message)
+        update = types.SimpleNamespace(callback_query=query)
+
+        asyncio.run(button_callback(handler_self, update, None))
+
+        handler_self.send_price_update.assert_awaited_once_with(123, "BTC", message=query_message)
 
     def test_dependency_stubs_expose_bot_app_import_surface(self) -> None:
         import telegram.ext as telegram_ext

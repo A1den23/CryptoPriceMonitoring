@@ -57,7 +57,9 @@ class TelegramBot:
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
         self._shutdown_event = asyncio.Event()
-        self._setup_signal_handlers()
+        self._original_sigint = None
+        self._original_sigterm = None
+        self._signal_handlers_registered = False
 
         self.start_time: datetime | None = None
         self._heartbeat_file = Path(os.getenv("BOT_HEARTBEAT_FILE", "/tmp/bot_heartbeat"))
@@ -132,8 +134,11 @@ class TelegramBot:
 
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
+        if self._signal_handlers_registered:
+            return
         self._original_sigint = signal.signal(signal.SIGINT, self._signal_handler)
         self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
+        self._signal_handlers_registered = True
         logger.debug("Signal handlers registered (bot)")
 
     def _signal_handler(self, signum: int, frame) -> None:
@@ -142,7 +147,8 @@ class TelegramBot:
         logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
 
         original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
-        self._restore_signal_handler(signum, original_handler)
+        if original_handler is not None:
+            self._restore_signal_handler(signum, original_handler)
         self._shutdown_event.set()
 
     @staticmethod
@@ -152,6 +158,18 @@ class TelegramBot:
             signal.signal(signum, original_handler)
         except (ValueError, OSError):
             pass
+
+    def _restore_signal_handlers(self) -> None:
+        """Restore original signal handlers on bot exit."""
+        if not self._signal_handlers_registered:
+            return
+        if self._original_sigint is not None:
+            self._restore_signal_handler(signal.SIGINT, self._original_sigint)
+        if self._original_sigterm is not None:
+            self._restore_signal_handler(signal.SIGTERM, self._original_sigterm)
+        self._original_sigint = None
+        self._original_sigterm = None
+        self._signal_handlers_registered = False
 
     @staticmethod
     def _chunk_buttons(
@@ -255,6 +273,7 @@ class TelegramBot:
         polling_started = False
 
         try:
+            self._setup_signal_handlers()
             self._touch_heartbeat()
             self.start_time = now_in_configured_timezone()
             heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -287,6 +306,7 @@ class TelegramBot:
                 await self.application.stop()
             if initialized or getattr(self.application, "initialized", False):
                 await self.application.shutdown()
+            self._restore_signal_handlers()
 
     def run(self):
         """Start the bot (synchronous wrapper)."""

@@ -126,13 +126,13 @@ async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TY
         enabled_coins = self.config.get_enabled_coins()
         prices = await self._get_prices([c.symbol for c in enabled_coins])
         message = self._render_all_prices_message(enabled_coins, prices)
-        await query.message.reply_text(text=message, parse_mode="HTML", disable_notification=False)
+        await self._send_or_edit_message(query.message.chat_id, message, message=query.message)
     elif callback_data.startswith("price_"):
         coin = callback_data.removeprefix("price_")
         if not coin:
             logger.warning(f"Ignoring invalid callback data: {callback_data}")
             return
-        await self.send_price_update(query.message.chat_id, coin, message=None)
+        await self.send_price_update(query.message.chat_id, coin, message=query.message)
 
 
 async def send_price_update(self, chat_id, coin_name, message=None):

@@ -1,7 +1,8 @@
+import asyncio
 import sys
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 def _install_dependency_stubs() -> None:
@@ -226,6 +227,29 @@ class FakeApplication:
     def __init__(self) -> None:
         self.handlers = []
         self.bot = types.SimpleNamespace(send_message=None)
+        self.initialized = False
+        self.running = False
+        self.updater = types.SimpleNamespace(
+            running=False,
+            start_polling=AsyncMock(),
+            stop=AsyncMock(),
+        )
+        self.initialize = AsyncMock(side_effect=self._initialize)
+        self.start = AsyncMock(side_effect=self._start)
+        self.stop = AsyncMock(side_effect=self._stop)
+        self.shutdown = AsyncMock(side_effect=self._shutdown)
+
+    async def _initialize(self) -> None:
+        self.initialized = True
+
+    async def _start(self) -> None:
+        self.running = True
+
+    async def _stop(self) -> None:
+        self.running = False
+
+    async def _shutdown(self) -> None:
+        self.initialized = False
 
     def add_handler(self, handler) -> None:
         self.handlers.append(handler)
@@ -275,6 +299,61 @@ class TelegramBotAppTests(unittest.TestCase):
             telegram_bot = bot_app.TelegramBot(config)
 
         return telegram_bot, application
+
+    def test_telegram_bot_registers_signal_handlers_only_during_run_async(self) -> None:
+        application = FakeApplication()
+
+        class FakeApplicationModule:
+            @staticmethod
+            def builder():
+                return FakeApplicationBuilder(application)
+
+        config = types.SimpleNamespace(telegram_bot_token="token", get_enabled_coins=lambda: [])
+        original_sigint = object()
+        original_sigterm = object()
+
+        async def fake_wait() -> None:
+            telegram_bot._shutdown_event.set()
+            return None
+
+        async def fake_heartbeat_loop() -> None:
+            await fake_wait()
+
+        class FakeFetcherContext:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+                return None
+
+        with patch.object(bot_app, "Application", FakeApplicationModule), \
+             patch.object(bot_app, "CommandHandler", FakeCommandHandler), \
+             patch.object(bot_app, "CallbackQueryHandler", FakeCallbackQueryHandler), \
+             patch.object(bot_app, "AsyncBinancePriceFetcher", return_value=FakeFetcherContext()), \
+             patch.object(bot_app, "now_in_configured_timezone", return_value=types.SimpleNamespace(strftime=lambda _fmt: "2026-03-25 10:30:45")), \
+             patch.object(bot_app.TelegramBot, "_touch_heartbeat", return_value=None), \
+             patch.object(bot_app.TelegramBot, "_heartbeat_loop", side_effect=fake_heartbeat_loop), \
+             patch.object(bot_app.signal, "signal") as mock_signal:
+            mock_signal.side_effect = [original_sigint, original_sigterm, None, None]
+            telegram_bot = bot_app.TelegramBot(config)
+            self.assertEqual(mock_signal.call_args_list, [])
+            self.assertFalse(hasattr(telegram_bot, "_signal_handlers_registered") and telegram_bot._signal_handlers_registered)
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(telegram_bot.run_async())
+            finally:
+                loop.close()
+
+        self.assertEqual(
+            mock_signal.call_args_list,
+            [
+                unittest.mock.call(bot_app.signal.SIGINT, telegram_bot._signal_handler),
+                unittest.mock.call(bot_app.signal.SIGTERM, telegram_bot._signal_handler),
+                unittest.mock.call(bot_app.signal.SIGINT, original_sigint),
+                unittest.mock.call(bot_app.signal.SIGTERM, original_sigterm),
+            ],
+        )
 
     def test_telegram_bot_exposes_command_and_message_helper_methods(self) -> None:
         telegram_bot, _ = self._build_bot()

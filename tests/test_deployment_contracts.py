@@ -11,6 +11,20 @@ class DeploymentContractsTests(unittest.TestCase):
 
         self.assertIn(".venv/", dockerignore)
 
+    def test_dockerignore_excludes_runtime_local_state(self) -> None:
+        dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+
+        self.assertIn(".env", dockerignore)
+        self.assertIn("logs/", dockerignore)
+
+    def test_dockerignore_keeps_core_project_docs_and_docker_files_in_context(self) -> None:
+        dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+
+        self.assertNotIn("README.md", dockerignore)
+        self.assertNotIn("*.md", dockerignore)
+        self.assertNotIn("Dockerfile", dockerignore)
+        self.assertNotIn("docker-compose.yml", dockerignore)
+
     def test_readme_documents_stable_unittest_entrypoint(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
