@@ -1,64 +1,97 @@
-import sys
 import types
 import unittest
 
-
-def _install_dependency_stubs() -> None:
-    """Install lightweight stubs so bot.messages imports work without optional packages."""
-    if "aiohttp" not in sys.modules:
-        aiohttp = types.ModuleType("aiohttp")
-
-        class ClientError(Exception):
-            pass
-
-        class ClientSession:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            async def close(self) -> None:
-                return None
-
-        class ClientTimeout:
-            def __init__(self, total=None) -> None:
-                self.total = total
-
-        aiohttp.ClientError = ClientError
-        aiohttp.ClientSession = ClientSession
-        aiohttp.ClientTimeout = ClientTimeout
-        sys.modules["aiohttp"] = aiohttp
-
-    if "telegram" not in sys.modules:
-        telegram = types.ModuleType("telegram")
-
-        class Update:
-            ALL_TYPES = object()
-
-        class InlineKeyboardButton:
-            def __init__(self, text: str, callback_data: str) -> None:
-                self.text = text
-                self.callback_data = callback_data
-
-        class InlineKeyboardMarkup:
-            def __init__(self, keyboard) -> None:
-                self.keyboard = keyboard
-
-        telegram.Update = Update
-        telegram.InlineKeyboardButton = InlineKeyboardButton
-        telegram.InlineKeyboardMarkup = InlineKeyboardMarkup
-        sys.modules["telegram"] = telegram
+from tests.stubs import install_dependency_stubs
 
 
-_install_dependency_stubs()
+install_dependency_stubs()
 
 from bot.messages import (
+    build_coin_button_rows,
+    build_price_keyboard,
+    build_start_keyboard,
+    render_all_prices_message,
     render_help_message,
     render_price_detail_message,
     render_price_picker_message,
+    render_status_message,
 )
 from common.config import CoinConfig
 
 
 class PriceMessageRenderingTests(unittest.TestCase):
+    @staticmethod
+    def _build_enabled_coins() -> list[CoinConfig]:
+        return [
+            CoinConfig(
+                coin_name="BTC",
+                enabled=True,
+                symbol="BTCUSDT",
+                integer_threshold=1000.0,
+                volatility_percent=3.0,
+                volatility_window=60,
+                volume_alert_multiplier=10.0,
+            ),
+            CoinConfig(
+                coin_name="ETH",
+                enabled=True,
+                symbol="ETHUSDT",
+                integer_threshold=100.0,
+                volatility_percent=4.0,
+                volatility_window=120,
+                volume_alert_multiplier=8.0,
+            ),
+        ]
+
+    def test_presentation_helpers_expose_pure_function_api(self) -> None:
+        self.assertTrue(callable(build_coin_button_rows))
+        self.assertTrue(callable(build_start_keyboard))
+        self.assertTrue(callable(build_price_keyboard))
+        self.assertTrue(callable(render_all_prices_message))
+        self.assertTrue(callable(render_status_message))
+
+    def test_build_coin_button_rows_creates_expected_callbacks(self) -> None:
+        rows = build_coin_button_rows(self._build_enabled_coins())
+
+        callback_data = [button.callback_data for row in rows for button in row]
+        self.assertEqual(callback_data, ["price_BTC", "price_ETH"])
+
+    def test_build_start_keyboard_includes_all_prices_and_coin_buttons(self) -> None:
+        keyboard = build_start_keyboard(self._build_enabled_coins())
+
+        callback_data = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertEqual(callback_data, ["all_prices", "price_BTC", "price_ETH"])
+
+    def test_build_price_keyboard_excludes_active_coin_from_refresh_options(self) -> None:
+        keyboard = build_price_keyboard("BTC", self._build_enabled_coins())
+
+        callback_data = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertEqual(callback_data, ["price_BTC", "all_prices", "price_ETH"])
+
+    def test_render_all_prices_message_renders_timestamp_without_self_dependency(self) -> None:
+        message = render_all_prices_message(
+            enabled_coins=self._build_enabled_coins(),
+            prices={"BTCUSDT": 95_123.456, "ETHUSDT": None},
+            timestamp="2026-03-25 10:30:45",
+        )
+
+        self.assertIn("<b>BTC</b>: $95,123.46", message)
+        self.assertIn("<b>ETH</b>: 获取失败", message)
+        self.assertTrue(message.endswith("⏱️ 2026-03-25 10:30:45"))
+
+    def test_render_status_message_renders_without_self_dependency(self) -> None:
+        message = render_status_message(
+            enabled_coins=self._build_enabled_coins(),
+            prices={"BTCUSDT": 95_123.456, "ETHUSDT": 3_200.0},
+            uptime="1h 2m 3s",
+            timestamp="2026-03-25 10:30:45",
+        )
+
+        self.assertIn("<b>BTC</b> (BTCUSDT)", message)
+        self.assertIn("里程碑：每 $1,000", message)
+        self.assertIn("⌛ 运行时间：1h 2m 3s", message)
+        self.assertTrue(message.endswith("⏱️ 2026-03-25 10:30:45"))
+
     def test_dependency_stubs_expose_bot_import_surface(self) -> None:
         import telegram
 

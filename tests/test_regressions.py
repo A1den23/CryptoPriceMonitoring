@@ -1,4 +1,6 @@
 import asyncio
+import importlib
+import importlib.util
 import inspect
 import os
 import re
@@ -12,209 +14,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-
-def _install_dependency_stubs() -> None:
-    """Install lightweight stubs so tests run without optional third-party packages."""
-    if "dotenv" not in sys.modules:
-        dotenv = types.ModuleType("dotenv")
-        dotenv.load_dotenv = lambda *args, **kwargs: False
-        sys.modules["dotenv"] = dotenv
-
-    if "tenacity" not in sys.modules:
-        tenacity = types.ModuleType("tenacity")
-
-        def retry(*args, **kwargs):
-            def decorator(func):
-                return func
-            return decorator
-
-        tenacity.retry = retry
-        tenacity.retry_if_exception_type = lambda *args, **kwargs: None
-        tenacity.stop_after_attempt = lambda *args, **kwargs: None
-        tenacity.wait_exponential = lambda *args, **kwargs: None
-        sys.modules["tenacity"] = tenacity
-
-    if "requests" not in sys.modules:
-        requests = types.ModuleType("requests")
-
-        class RequestException(Exception):
-            pass
-
-        class DummyResponse:
-            def __init__(self, payload: dict | None = None) -> None:
-                self._payload = payload or {"price": "1.0"}
-
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self) -> dict:
-                return self._payload
-
-        class Session:
-            def mount(self, *args, **kwargs) -> None:
-                return None
-
-            def get(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse()
-
-            def post(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse({})
-
-            def close(self) -> None:
-                return None
-
-        class HTTPAdapter:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        requests.Session = Session
-        requests.post = lambda *args, **kwargs: DummyResponse({})
-        requests.exceptions = types.SimpleNamespace(RequestException=RequestException)
-        requests.adapters = types.SimpleNamespace(HTTPAdapter=HTTPAdapter)
-        sys.modules["requests"] = requests
-
-    if "aiohttp" not in sys.modules:
-        aiohttp = types.ModuleType("aiohttp")
-
-        class ClientError(Exception):
-            pass
-
-        class ClientTimeout:
-            def __init__(self, total=None) -> None:
-                self.total = total
-
-        class DummyResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            async def json(self) -> dict:
-                return {"price": "1.0"}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-                return None
-
-        class ClientSession:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            def get(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse()
-
-            async def close(self) -> None:
-                return None
-
-        aiohttp.ClientError = ClientError
-        aiohttp.ClientSession = ClientSession
-        aiohttp.ClientTimeout = ClientTimeout
-        sys.modules["aiohttp"] = aiohttp
-
-    if "websockets" not in sys.modules:
-        websockets = types.ModuleType("websockets")
-
-        class DummyProtocol:
-            def __init__(self) -> None:
-                self.closed = False
-
-            async def ping(self):
-                return None
-
-            async def close(self) -> None:
-                self.closed = True
-
-        async def connect(*args, **kwargs):
-            return DummyProtocol()
-
-        class ConnectionClosed(Exception):
-            pass
-
-        websockets.connect = connect
-        websockets.client = types.SimpleNamespace(WebSocketClientProtocol=DummyProtocol)
-        websockets.exceptions = types.SimpleNamespace(ConnectionClosed=ConnectionClosed)
-        sys.modules["websockets"] = websockets
-
-    if "telegram" not in sys.modules:
-        telegram = types.ModuleType("telegram")
-
-        class Update:
-            ALL_TYPES = object()
-
-        class InlineKeyboardButton:
-            def __init__(self, text: str, callback_data: str) -> None:
-                self.text = text
-                self.callback_data = callback_data
-
-        class InlineKeyboardMarkup:
-            def __init__(self, keyboard) -> None:
-                self.keyboard = keyboard
-
-        telegram.Update = Update
-        telegram.InlineKeyboardButton = InlineKeyboardButton
-        telegram.InlineKeyboardMarkup = InlineKeyboardMarkup
-        sys.modules["telegram"] = telegram
-
-    if "telegram.ext" not in sys.modules:
-        telegram_ext = types.ModuleType("telegram.ext")
-
-        async def _async_noop(*args, **kwargs) -> None:
-            return None
-
-        class ApplicationBuilder:
-            def token(self, token: str):
-                return self
-
-            def connection_pool_size(self, size: int):
-                return self
-
-            def pool_timeout(self, timeout: float | None):
-                return self
-
-            def get_updates_connection_pool_size(self, size: int):
-                return self
-
-            def get_updates_pool_timeout(self, timeout: float | None):
-                return self
-
-            def build(self):
-                return types.SimpleNamespace(
-                    add_handler=lambda *args, **kwargs: None,
-                    bot=types.SimpleNamespace(send_message=_async_noop),
-                    updater=types.SimpleNamespace(
-                        start_polling=_async_noop,
-                        stop=_async_noop,
-                    ),
-                    initialize=_async_noop,
-                    start=_async_noop,
-                    stop=_async_noop,
-                    shutdown=_async_noop,
-                )
-
-        class Application:
-            @staticmethod
-            def builder():
-                return ApplicationBuilder()
-
-        class CommandHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        class CallbackQueryHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        class ContextTypes:
-            DEFAULT_TYPE = object
-
-        telegram_ext.Application = Application
-        telegram_ext.CommandHandler = CommandHandler
-        telegram_ext.CallbackQueryHandler = CallbackQueryHandler
-        telegram_ext.ContextTypes = ContextTypes
-        sys.modules["telegram.ext"] = telegram_ext
+from tests.stubs import install_dependency_stubs
 
 
-_install_dependency_stubs()
+install_dependency_stubs()
 
 import bot
 import monitor
@@ -319,6 +122,24 @@ class FakeStablecoinClient:
         if self.error is not None:
             raise self.error
         return self.snapshots[:top_n]
+
+
+class SharedTestStubRegressionTests(unittest.TestCase):
+    def test_shared_stub_module_exists_and_installs_core_import_surface(self) -> None:
+        self.assertIsNotNone(importlib.util.find_spec("tests.stubs"))
+
+        stubs = importlib.import_module("tests.stubs")
+        install_dependency_stubs = getattr(stubs, "install_dependency_stubs")
+        install_dependency_stubs()
+
+        import aiohttp
+        import telegram
+        import telegram.ext as telegram_ext
+
+        self.assertTrue(hasattr(aiohttp, "ClientSession"))
+        self.assertTrue(hasattr(telegram, "Update"))
+        self.assertTrue(hasattr(telegram.Update, "ALL_TYPES"))
+        self.assertTrue(hasattr(telegram_ext, "Application"))
 
 
 class PriceMonitorRegressionTests(unittest.TestCase):
@@ -780,6 +601,169 @@ class PriceMonitorRegressionTests(unittest.TestCase):
         self.assertIsNone(price_monitor.last_volume_alert_time)
 
 
+class AlertMessagePresenterRegressionTests(unittest.TestCase):
+    def test_alert_message_module_exposes_renderers_for_price_monitor_notifications(self) -> None:
+        self.assertIsNotNone(importlib.util.find_spec("monitor.alerts"))
+
+        alerts = importlib.import_module("monitor.alerts")
+        render_milestone_alert = getattr(alerts, "render_milestone_alert", None)
+        render_volatility_alert = getattr(alerts, "render_volatility_alert", None)
+        render_volume_alert = getattr(alerts, "render_volume_alert", None)
+
+        self.assertTrue(callable(render_milestone_alert))
+        self.assertTrue(callable(render_volatility_alert))
+        self.assertTrue(callable(render_volume_alert))
+
+    def test_render_milestone_alert_preserves_existing_message_text(self) -> None:
+        alerts = importlib.import_module("monitor.alerts")
+        message = alerts.render_milestone_alert(
+            symbol="BTC<USDT>",
+            current_price=101_000.0,
+            is_up=True,
+            current_time=datetime(2026, 3, 6, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(
+            message,
+            "🎉🎉【价格里程碑】🎉🎉\n"
+            "🪙 BTC&lt;USDT&gt;\n"
+            "💰 价格: $101,000.00\n"
+            "📈 突破方向: 向上 ↑\n"
+            "⏱️ 2026-03-06 00:00:00",
+        )
+
+    def test_render_volatility_alert_preserves_existing_message_text(self) -> None:
+        alerts = importlib.import_module("monitor.alerts")
+        message = alerts.render_volatility_alert(
+            symbol="BTC<USDT>",
+            current_price=101_000.0,
+            volatility_window=180,
+            sample_count=2,
+            reasons=["区间波动: 1.00%"],
+            change_percent=1.0,
+            current_time=datetime(2026, 3, 6, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(
+            message,
+            "⚠️⚠️【波动警报】⚠️⚠️\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "🪙 BTC&lt;USDT&gt;\n"
+            "💰 当前: $101,000.00\n"
+            "📊 时间窗口: 180s (2 pts)\n"
+            "⚡️ 触发指标: 区间波动: 1.00%\n"
+            "📈 净变化: +1.00%\n"
+            "⏱️ 2026-03-06 00:00:00\n"
+            "━━━━━━━━━━━━━━━━━",
+        )
+
+    def test_render_volume_alert_preserves_existing_message_text(self) -> None:
+        alerts = importlib.import_module("monitor.alerts")
+        message = alerts.render_volume_alert(
+            symbol="BTC<USDT>",
+            current_price=101_000.0,
+            price_change_pct=1.0,
+            volume_multiplier=10.0,
+            current_volume=20_000.0,
+            avg_volume=2_000.0,
+            current_time=datetime(2026, 3, 6, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(
+            message,
+            "🚨🚨【成交量异常警报】🚨🚨\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "🪙 BTC&lt;USDT&gt;\n"
+            "💰 当前价格: $101,000.00\n"
+            "📈 价格变化: +1.00%\n"
+            "📊 成交量暴增: 10.0x\n"
+            "📈 当前成交量: 20,000\n"
+            "📊 基准成交量: 2,000\n"
+            "⏱️ 2026-03-06 00:00:00\n"
+            "━━━━━━━━━━━━━━━━━",
+        )
+
+
+class WebSocketRuntimeMessageRegressionTests(unittest.TestCase):
+    def test_runtime_message_module_exposes_ws_monitor_renderers(self) -> None:
+        self.assertIsNotNone(importlib.util.find_spec("monitor.runtime_messages"))
+
+        runtime_messages = importlib.import_module("monitor.runtime_messages")
+        self.assertTrue(callable(getattr(runtime_messages, "render_shutdown_notification", None)))
+        self.assertTrue(callable(getattr(runtime_messages, "render_disconnect_alert", None)))
+        self.assertTrue(callable(getattr(runtime_messages, "render_reconnect_alert", None)))
+        self.assertTrue(callable(getattr(runtime_messages, "render_realtime_updates_block", None)))
+
+    def test_render_shutdown_notification_preserves_existing_message_text(self) -> None:
+        runtime_messages = importlib.import_module("monitor.runtime_messages")
+        message = runtime_messages.render_shutdown_notification(
+            current_time=datetime(2026, 3, 6, tzinfo=timezone.utc),
+            uptime="1h 2m",
+            monitor_count=3,
+        )
+
+        self.assertEqual(
+            message,
+            "👋 <b>加密货币价格监控已停止</b>\n"
+            "⏱️ 2026-03-06 00:00:00\n"
+            "⌛ 运行时间: 1h 2m\n"
+            "🪙 监控币种: 3 个\n"
+            "📊 状态: 优雅关闭",
+        )
+
+    def test_render_disconnect_alert_preserves_existing_message_text(self) -> None:
+        runtime_messages = importlib.import_module("monitor.runtime_messages")
+        message = runtime_messages.render_disconnect_alert(
+            reason="test disconnect",
+            current_time=datetime(2026, 3, 6, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(
+            message,
+            "🚨🚨【连接断开警报】🚨🚨\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "⚠️ 价格监控连接已中断！\n"
+            "📡 连接状态: 已断开\n"
+            "🔍 断开原因: test disconnect\n"
+            "⏱️ 2026-03-06 00:00:00\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "💡 系统正在尝试自动重连...",
+        )
+
+    def test_render_reconnect_alert_preserves_existing_message_text(self) -> None:
+        runtime_messages = importlib.import_module("monitor.runtime_messages")
+        message = runtime_messages.render_reconnect_alert(
+            attempt_count=2,
+            downtime="15秒",
+            current_time=datetime(2026, 3, 6, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(
+            message,
+            "✅✅【连接恢复通知】✅✅\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "📡 价格监控已恢复正常\n"
+            "🔄 重连次数: 2 次\n"
+            "⏱️ 中断时长: 15秒\n"
+            "⏱️ 2026-03-06 00:00:00\n"
+            "━━━━━━━━━━━━━━━━━",
+        )
+
+    def test_render_realtime_updates_block_preserves_existing_console_text(self) -> None:
+        runtime_messages = importlib.import_module("monitor.runtime_messages")
+        block = runtime_messages.render_realtime_updates_block(
+            timestamp="12:34:56",
+            updates=["BTC $100,000", "ETH $3,000"],
+        )
+
+        self.assertEqual(
+            block,
+            "[12:34:56] 实时更新:\n"
+            "  BTC $100,000\n"
+            "  ETH $3,000\n",
+        )
+
+
 class ConfigManagerRegressionTests(unittest.TestCase):
     def test_config_manager_reads_stablecoin_depeg_settings(self) -> None:
         with patch.dict(
@@ -810,6 +794,26 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         self.assertEqual(config.stablecoin_depeg_threshold_percent, 5.0)
         self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 60)
         self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 300)
+
+    def test_config_manager_reads_runtime_notification_and_heartbeat_settings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_BOT_TOKEN": "token-from-config",
+                "TELEGRAM_CHAT_ID": "chat-from-config",
+                "BOT_HEARTBEAT_FILE": "/tmp/custom-bot-heartbeat",
+                "BOT_HEARTBEAT_INTERVAL_SECONDS": "45",
+                "MONITOR_HEARTBEAT_FILE": "/tmp/custom-monitor-heartbeat",
+            },
+            clear=True,
+        ), patch("common.config.load_environment"):
+            config = ConfigManager()
+
+        self.assertEqual(config.telegram_bot_token, "token-from-config")
+        self.assertEqual(config.telegram_chat_id, "chat-from-config")
+        self.assertEqual(config.bot_heartbeat_file, "/tmp/custom-bot-heartbeat")
+        self.assertEqual(config.bot_heartbeat_interval_seconds, 45.0)
+        self.assertEqual(config.monitor_heartbeat_file, "/tmp/custom-monitor-heartbeat")
 
 
 class DefiLlamaClientRegressionTests(unittest.TestCase):
@@ -1330,6 +1334,9 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
             volume_alert_multiplier=10.0,
         )
         return types.SimpleNamespace(
+            telegram_bot_token="token",
+            telegram_chat_id="chat",
+            monitor_heartbeat_file="/tmp/monitor-heartbeat-test",
             get_enabled_coins=lambda: [coin],
             volume_alert_cooldown_seconds=60,
             volatility_alert_cooldown_seconds=60,
@@ -1534,6 +1541,50 @@ class TelegramNotifierRegressionTests(unittest.TestCase):
         self.assertNotIn("secret123", rendered)
 
 
+class WebSocketParserRegressionTests(unittest.TestCase):
+    def test_websocket_parser_module_exposes_message_parsers(self) -> None:
+        self.assertIsNotNone(importlib.util.find_spec("common.clients.websocket_parser"))
+
+        parser = importlib.import_module("common.clients.websocket_parser")
+        self.assertTrue(callable(getattr(parser, "parse_ticker_message", None)))
+        self.assertTrue(callable(getattr(parser, "parse_kline_message", None)))
+
+    def test_parse_ticker_message_preserves_combined_stream_shape(self) -> None:
+        parser = importlib.import_module("common.clients.websocket_parser")
+        symbol, price = parser.parse_ticker_message(
+            {
+                "stream": "btcusdt@ticker",
+                "data": {"e": "24hrTicker", "s": "BTCUSDT", "c": "95123.45"},
+            }
+        )
+
+        self.assertEqual(symbol, "BTCUSDT")
+        self.assertEqual(price, 95123.45)
+
+    def test_parse_kline_message_preserves_closed_kline_shape(self) -> None:
+        parser = importlib.import_module("common.clients.websocket_parser")
+        kline_data = parser.parse_kline_message(
+            {
+                "stream": "btcusdt@kline_1m",
+                "data": {
+                    "e": "kline",
+                    "s": "BTCUSDT",
+                    "k": {"s": "BTCUSDT", "c": "1.23", "v": "4.56", "x": True},
+                },
+            }
+        )
+
+        self.assertEqual(kline_data, ("BTCUSDT", 1.23, 4.56, True))
+
+    def test_parse_kline_message_returns_none_for_non_kline_events(self) -> None:
+        parser = importlib.import_module("common.clients.websocket_parser")
+        kline_data = parser.parse_kline_message(
+            {"stream": "btcusdt@ticker", "data": {"e": "24hrTicker", "s": "BTCUSDT", "c": "95123.45"}}
+        )
+
+        self.assertIsNone(kline_data)
+
+
 class BinanceWebSocketClientRegressionTests(unittest.TestCase):
     def test_message_handler_transitions_to_reconnecting_when_stream_ends_cleanly(self) -> None:
         async def on_price(symbol: str, price: float) -> None:
@@ -1651,6 +1702,9 @@ class TelegramBotRegressionTests(unittest.TestCase):
     def test_run_async_cleans_up_when_initialize_fails_after_partial_setup(self) -> None:
         config = types.SimpleNamespace(
             telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
             get_enabled_coins=lambda: [],
         )
         fake_fetcher = object()
@@ -1719,6 +1773,9 @@ class TelegramBotRegressionTests(unittest.TestCase):
     def test_run_async_cleans_up_when_startup_fails(self) -> None:
         config = types.SimpleNamespace(
             telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
             get_enabled_coins=lambda: [],
         )
         fake_fetcher = object()
@@ -1768,6 +1825,9 @@ class TelegramBotRegressionTests(unittest.TestCase):
     def test_render_all_prices_message_is_localized_in_chinese(self) -> None:
         config = types.SimpleNamespace(
             telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
             get_enabled_coins=lambda: [],
         )
 
@@ -1794,6 +1854,9 @@ class TelegramBotRegressionTests(unittest.TestCase):
     def test_button_callback_preserves_full_coin_name_after_prefix(self) -> None:
         config = types.SimpleNamespace(
             telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
             get_enabled_coins=lambda: [],
         )
 
@@ -1819,6 +1882,9 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
     def _build_bot() -> bot.TelegramBot:
         config = types.SimpleNamespace(
             telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
             get_enabled_coins=lambda: [],
         )
 
@@ -1983,7 +2049,14 @@ class MainEntrypointRegressionTests(unittest.TestCase):
 
         with patch.object(bot, "load_environment"), \
              patch.object(bot, "setup_logging"), \
-             patch.object(bot, "ConfigManager", return_value=object()), \
+             patch.object(
+                 bot,
+                 "ConfigManager",
+                 return_value=types.SimpleNamespace(
+                     telegram_bot_token="token",
+                     telegram_chat_id="chat",
+                 ),
+             ), \
              patch.object(bot, "TelegramNotifier", return_value=DummyNotifier()), \
              patch.object(bot.logger, "exception"), \
              patch.object(bot, "TelegramBot", DummyBot):
@@ -2015,7 +2088,14 @@ class MainEntrypointRegressionTests(unittest.TestCase):
         try:
             with patch.object(bot, "load_environment", side_effect=fake_load_environment), \
                  patch.object(bot, "setup_logging", side_effect=fake_setup_logging), \
-                 patch.object(bot, "ConfigManager", return_value=object()), \
+                 patch.object(
+                 bot,
+                 "ConfigManager",
+                 return_value=types.SimpleNamespace(
+                     telegram_bot_token="token",
+                     telegram_chat_id="chat",
+                 ),
+             ), \
                  patch.object(bot, "TelegramNotifier", return_value=DummyNotifier()), \
                  patch.object(bot, "TelegramBot", DummyBot):
                 bot.main()
@@ -2059,6 +2139,13 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("默认 ±5%", content)
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT", content)
 
+    def test_readme_documents_timezone_fallback_as_fixed_offset_approximation(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+        self.assertIn("TIMEZONE", content)
+        self.assertIn("fixed-offset fallback", content)
+        self.assertIn("DST", content)
+
 
 class DockerRegressionTests(unittest.TestCase):
     def test_dockerfile_uses_heartbeat_healthcheck(self) -> None:
@@ -2082,7 +2169,15 @@ class DockerRegressionTests(unittest.TestCase):
         try:
             with patch.object(monitor, "load_environment", side_effect=fake_load_environment), \
                  patch.object(monitor, "setup_logging", side_effect=fake_setup_logging), \
-                 patch.object(monitor, "ConfigManager", return_value=object()), \
+                 patch.object(
+                 monitor,
+                 "ConfigManager",
+                 return_value=types.SimpleNamespace(
+                     telegram_bot_token="token",
+                     telegram_chat_id="chat",
+                     monitor_heartbeat_file="/tmp/monitor-heartbeat-test",
+                 ),
+             ), \
                  patch.object(monitor, "WebSocketMultiCoinMonitor"), \
                  patch.object(monitor.asyncio, "run"):
                 monitor.main()

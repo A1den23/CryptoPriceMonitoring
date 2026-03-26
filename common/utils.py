@@ -2,9 +2,10 @@
 Utility functions for Crypto Price Monitoring Bot
 """
 
-import os
 from datetime import datetime, timedelta, timezone, tzinfo
 from functools import lru_cache
+
+from .config import get_configured_timezone_name
 
 
 @lru_cache(maxsize=32)
@@ -42,8 +43,7 @@ def _resolve_timezone(tz_name: str) -> tzinfo:
 
 def get_configured_timezone() -> tzinfo:
     """Get configured timezone, defaults to Asia/Shanghai (UTC+8)."""
-    tz_name = os.getenv("TIMEZONE", "Asia/Shanghai")
-    return _resolve_timezone(tz_name)
+    return _resolve_timezone(get_configured_timezone_name())
 
 
 def now_in_configured_timezone() -> datetime:

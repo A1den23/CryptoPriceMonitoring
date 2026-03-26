@@ -6,6 +6,8 @@ import types
 import unittest
 from unittest import mock
 
+from tests.stubs import install_dependency_stubs
+
 
 PACKAGE_PREFIXES = ("common", "bot", "monitor")
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,228 +19,6 @@ def _package_module_names() -> tuple[str, ...]:
     return PACKAGE_PREFIXES
 
 
-def _install_dependency_stubs() -> None:
-    """Install lightweight stubs so package imports work without optional packages."""
-    if "dotenv" not in sys.modules:
-        dotenv = types.ModuleType("dotenv")
-        dotenv.load_dotenv = lambda *args, **kwargs: False
-        sys.modules["dotenv"] = dotenv
-
-    if "tenacity" not in sys.modules:
-        tenacity = types.ModuleType("tenacity")
-
-        def retry(*args, **kwargs):
-            def decorator(func):
-                return func
-
-            return decorator
-
-        tenacity.retry = retry
-        tenacity.retry_if_exception_type = lambda *args, **kwargs: None
-        tenacity.stop_after_attempt = lambda *args, **kwargs: None
-        tenacity.wait_exponential = lambda *args, **kwargs: None
-        sys.modules["tenacity"] = tenacity
-
-    if "requests" not in sys.modules:
-        requests = types.ModuleType("requests")
-
-        class RequestException(Exception):
-            pass
-
-        class DummyResponse:
-            def __init__(self, payload: dict | None = None) -> None:
-                self._payload = payload or {"price": "1.0"}
-
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self) -> dict:
-                return self._payload
-
-        class Session:
-            def mount(self, *args, **kwargs) -> None:
-                return None
-
-            def get(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse()
-
-            def post(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse({})
-
-            def close(self) -> None:
-                return None
-
-        class HTTPAdapter:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        requests.Session = Session
-        requests.exceptions = types.SimpleNamespace(RequestException=RequestException)
-        requests.adapters = types.SimpleNamespace(HTTPAdapter=HTTPAdapter)
-        sys.modules["requests"] = requests
-
-    if "aiohttp" not in sys.modules:
-        aiohttp = types.ModuleType("aiohttp")
-
-        class ClientError(Exception):
-            pass
-
-        class ClientTimeout:
-            def __init__(self, total=None) -> None:
-                self.total = total
-
-        class DummyResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            async def json(self) -> dict:
-                return {"price": "1.0", "peggedAssets": []}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-                return None
-
-        class ClientSession:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            def get(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse()
-
-            async def close(self) -> None:
-                return None
-
-        aiohttp.ClientError = ClientError
-        aiohttp.ClientSession = ClientSession
-        aiohttp.ClientTimeout = ClientTimeout
-        sys.modules["aiohttp"] = aiohttp
-
-    if "websockets" not in sys.modules:
-        websockets = types.ModuleType("websockets")
-
-        class DummyProtocol:
-            def __init__(self) -> None:
-                self.closed = False
-
-            async def ping(self):
-                return None
-
-            async def close(self) -> None:
-                self.closed = True
-
-        class ConnectionClosed(Exception):
-            pass
-
-        async def connect(*args, **kwargs):
-            return DummyProtocol()
-
-        websockets.connect = connect
-        websockets.client = types.SimpleNamespace(WebSocketClientProtocol=DummyProtocol)
-        websockets.exceptions = types.SimpleNamespace(ConnectionClosed=ConnectionClosed)
-        sys.modules["websockets"] = websockets
-
-    if "telegram" not in sys.modules:
-        telegram = types.ModuleType("telegram")
-
-        class Update:
-            ALL_TYPES = object()
-
-        class InlineKeyboardButton:
-            def __init__(self, text: str, callback_data: str) -> None:
-                self.text = text
-                self.callback_data = callback_data
-
-        class InlineKeyboardMarkup:
-            def __init__(self, keyboard) -> None:
-                self.keyboard = keyboard
-
-        telegram.Update = Update
-        telegram.InlineKeyboardButton = InlineKeyboardButton
-        telegram.InlineKeyboardMarkup = InlineKeyboardMarkup
-        sys.modules["telegram"] = telegram
-
-    if "telegram.ext" not in sys.modules:
-        telegram_ext = types.ModuleType("telegram.ext")
-
-        class ContextTypes:
-            DEFAULT_TYPE = object
-
-        class DummyUpdater:
-            def __init__(self) -> None:
-                self.running = False
-
-            async def start_polling(self, *args, **kwargs) -> None:
-                self.running = True
-
-            async def stop(self) -> None:
-                self.running = False
-
-        class DummyBot:
-            async def send_message(self, *args, **kwargs) -> None:
-                return None
-
-        class Application:
-            def __init__(self) -> None:
-                self.bot = DummyBot()
-                self.updater = DummyUpdater()
-                self.running = False
-                self.initialized = False
-
-            @classmethod
-            def builder(cls):
-                class Builder:
-                    def token(self, *args, **kwargs):
-                        return self
-
-                    def connection_pool_size(self, *args, **kwargs):
-                        return self
-
-                    def pool_timeout(self, *args, **kwargs):
-                        return self
-
-                    def get_updates_connection_pool_size(self, *args, **kwargs):
-                        return self
-
-                    def get_updates_pool_timeout(self, *args, **kwargs):
-                        return self
-
-                    def build(self):
-                        return Application()
-
-                return Builder()
-
-            def add_handler(self, *args, **kwargs) -> None:
-                return None
-
-            async def initialize(self) -> None:
-                self.initialized = True
-
-            async def start(self) -> None:
-                self.running = True
-
-            async def stop(self) -> None:
-                self.running = False
-
-            async def shutdown(self) -> None:
-                self.initialized = False
-
-        class CommandHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        class CallbackQueryHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        telegram_ext.Application = Application
-        telegram_ext.CommandHandler = CommandHandler
-        telegram_ext.CallbackQueryHandler = CallbackQueryHandler
-        telegram_ext.ContextTypes = ContextTypes
-        sys.modules["telegram.ext"] = telegram_ext
-
-
 def _clear_package_modules() -> None:
     for name in list(sys.modules):
         if name in PACKAGE_PREFIXES or name.startswith(tuple(f"{prefix}." for prefix in PACKAGE_PREFIXES)):
@@ -247,7 +27,7 @@ def _clear_package_modules() -> None:
 
 class EntrypointImportContractTests(unittest.TestCase):
     def setUp(self) -> None:
-        _install_dependency_stubs()
+        install_dependency_stubs()
         self._saved_modules = {
             name: module
             for name, module in sys.modules.items()
@@ -427,10 +207,15 @@ class EntrypointImportContractTests(unittest.TestCase):
         bot_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, exception=lambda *args, **kwargs: None)
         monitor_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, error=lambda *args, **kwargs: None)
 
+        bot_config = types.SimpleNamespace(
+            telegram_bot_token="bot-token",
+            telegram_chat_id="bot-chat",
+        )
+
         with (
             mock.patch.object(bot, "load_environment") as bot_load_environment,
             mock.patch.object(bot, "setup_logging") as bot_setup_logging,
-            mock.patch.object(bot, "ConfigManager", return_value=mock.sentinel.bot_config) as bot_config_manager,
+            mock.patch.object(bot, "ConfigManager", return_value=bot_config) as bot_config_manager,
             mock.patch.object(bot, "TelegramNotifier", return_value=mock.sentinel.bot_notifier) as bot_notifier_cls,
             mock.patch.object(bot, "TelegramBot") as bot_cls,
             mock.patch.object(bot, "now_in_configured_timezone") as bot_now,
@@ -456,8 +241,11 @@ class EntrypointImportContractTests(unittest.TestCase):
         bot_load_environment.assert_called_once_with()
         bot_setup_logging.assert_called_once_with(log_file="logs/bot.log")
         bot_config_manager.assert_called_once_with()
-        bot_notifier_cls.assert_called_once_with()
-        bot_cls.assert_called_once_with(mock.sentinel.bot_config)
+        bot_notifier_cls.assert_called_once_with(
+            bot_token=bot_config.telegram_bot_token,
+            chat_id=bot_config.telegram_chat_id,
+        )
+        bot_cls.assert_called_once_with(bot_config)
         bot_instance.run.assert_called_once_with()
 
         monitor_load_environment.assert_called_once_with()
@@ -467,6 +255,78 @@ class EntrypointImportContractTests(unittest.TestCase):
         test_volatility_alert.assert_not_called()
         ws_monitor_cls.assert_not_called()
         asyncio_run.assert_not_called()
+
+    def test_bot_main_closes_owned_notifier_when_main_exits(self) -> None:
+        bot = importlib.import_module("bot")
+        _ = bot.TelegramBot
+
+        bot_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, exception=lambda *args, **kwargs: None)
+
+        bot_config = types.SimpleNamespace(
+            telegram_bot_token="bot-token",
+            telegram_chat_id="bot-chat",
+        )
+        bot_notifier = mock.Mock()
+
+        with (
+            mock.patch.object(bot, "load_environment"),
+            mock.patch.object(bot, "setup_logging"),
+            mock.patch.object(bot, "ConfigManager", return_value=bot_config),
+            mock.patch.object(bot, "TelegramNotifier", return_value=bot_notifier),
+            mock.patch.object(bot, "TelegramBot") as bot_cls,
+            mock.patch.object(bot, "now_in_configured_timezone") as bot_now,
+            mock.patch.object(bot, "logger", bot_logger),
+        ):
+            bot_instance = bot_cls.return_value
+            bot_instance.run.side_effect = KeyboardInterrupt()
+            bot_instance._shutdown_event = types.SimpleNamespace(is_set=lambda: False)
+            bot_now.return_value = mock.Mock(strftime=mock.Mock(return_value="2026-03-24 00:00:00"))
+
+            bot.main()
+
+        bot_notifier.close.assert_called_once_with()
+
+    def test_monitor_test_entrypoint_closes_owned_notifier_when_execution_exits(self) -> None:
+        monitor = importlib.import_module("monitor")
+        monitor_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, error=lambda *args, **kwargs: None)
+        monitor_notifier = mock.Mock()
+        coin_config = types.SimpleNamespace(
+            coin_name="BTC",
+            symbol="BTCUSDT",
+            volatility_percent=3.0,
+            volatility_window=60,
+        )
+        monitor_config = types.SimpleNamespace(
+            telegram_bot_token="bot-token",
+            telegram_chat_id="monitor-chat",
+            get_enabled_coins=lambda: [coin_config],
+        )
+
+        with (
+            mock.patch.object(monitor, "ConfigManager", return_value=monitor_config),
+            mock.patch.object(monitor, "TelegramNotifier", return_value=monitor_notifier),
+            mock.patch.object(monitor, "get_coin_display_name", return_value="BTC"),
+            mock.patch.object(monitor, "format_price", return_value="$95,123.46"),
+            mock.patch.object(monitor, "now_in_configured_timezone") as monitor_now,
+            mock.patch.object(monitor, "logger", monitor_logger),
+            mock.patch.object(monitor, "print"),
+            mock.patch.object(monitor, "BinancePriceFetcher") as fetcher_cls,
+        ):
+            fetcher = fetcher_cls.return_value.__enter__.return_value
+            fetcher.get_current_price.return_value = 95123.456
+            monitor_now.return_value = mock.Mock(strftime=mock.Mock(return_value="2026-03-24 00:00:00"))
+
+            monitor.test_volatility_alert()
+
+        monitor_notifier.close.assert_called_once_with()
+
+    def test_logging_resolves_named_levels_without_private_logging_map(self) -> None:
+        logging_utils = importlib.import_module("common.logging")
+
+        with mock.patch.object(logging_utils.logging, "_nameToLevel", {}):
+            self.assertEqual(logging_utils._resolve_log_level("warning"), logging_utils.logging.WARNING)
+            self.assertEqual(logging_utils._resolve_log_level("WARN"), logging_utils.logging.WARNING)
+            self.assertEqual(logging_utils._resolve_log_level("not-a-level"), logging_utils.logging.INFO)
 
     def test_module_main_entrypoints_delegate_to_package_main(self) -> None:
         monitor = importlib.import_module("monitor")

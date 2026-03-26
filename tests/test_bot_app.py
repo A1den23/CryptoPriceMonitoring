@@ -1,213 +1,12 @@
 import asyncio
-import sys
 import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
-
-def _install_dependency_stubs() -> None:
-    """Install lightweight stubs so bot imports work without optional packages."""
-    if "dotenv" not in sys.modules:
-        dotenv = types.ModuleType("dotenv")
-        dotenv.load_dotenv = lambda *args, **kwargs: False
-        sys.modules["dotenv"] = dotenv
-
-    if "tenacity" not in sys.modules:
-        tenacity = types.ModuleType("tenacity")
-
-        def retry(*args, **kwargs):
-            def decorator(func):
-                return func
-
-            return decorator
-
-        tenacity.retry = retry
-        tenacity.retry_if_exception_type = lambda *args, **kwargs: None
-        tenacity.stop_after_attempt = lambda *args, **kwargs: None
-        tenacity.wait_exponential = lambda *args, **kwargs: None
-        sys.modules["tenacity"] = tenacity
-
-    if "requests" not in sys.modules:
-        requests = types.ModuleType("requests")
-
-        class RequestException(Exception):
-            pass
-
-        class DummyResponse:
-            def __init__(self, payload: dict | None = None) -> None:
-                self._payload = payload or {"price": "1.0"}
-
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self) -> dict:
-                return self._payload
-
-        class Session:
-            def mount(self, *args, **kwargs) -> None:
-                return None
-
-            def get(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse()
-
-            def post(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse({})
-
-            def close(self) -> None:
-                return None
-
-        class HTTPAdapter:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        requests.Session = Session
-        requests.post = lambda *args, **kwargs: DummyResponse({})
-        requests.exceptions = types.SimpleNamespace(RequestException=RequestException)
-        requests.adapters = types.SimpleNamespace(HTTPAdapter=HTTPAdapter)
-        sys.modules["requests"] = requests
-
-    if "aiohttp" not in sys.modules:
-        aiohttp = types.ModuleType("aiohttp")
-
-        class ClientError(Exception):
-            pass
-
-        class ClientTimeout:
-            def __init__(self, total=None) -> None:
-                self.total = total
-
-        class DummyResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            async def json(self) -> dict:
-                return {"price": "1.0"}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-                return None
-
-        class ClientSession:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            def get(self, *args, **kwargs) -> DummyResponse:
-                return DummyResponse()
-
-            async def close(self) -> None:
-                return None
-
-        aiohttp.ClientError = ClientError
-        aiohttp.ClientSession = ClientSession
-        aiohttp.ClientTimeout = ClientTimeout
-        sys.modules["aiohttp"] = aiohttp
-
-    if "websockets" not in sys.modules:
-        websockets = types.ModuleType("websockets")
-
-        class DummyProtocol:
-            def __init__(self) -> None:
-                self.closed = False
-
-            async def ping(self):
-                return None
-
-            async def close(self) -> None:
-                self.closed = True
-
-        async def connect(*args, **kwargs):
-            return DummyProtocol()
-
-        class ConnectionClosed(Exception):
-            pass
-
-        websockets.connect = connect
-        websockets.client = types.SimpleNamespace(WebSocketClientProtocol=DummyProtocol)
-        websockets.exceptions = types.SimpleNamespace(ConnectionClosed=ConnectionClosed)
-        sys.modules["websockets"] = websockets
-
-    if "telegram" not in sys.modules:
-        telegram = types.ModuleType("telegram")
-
-        class Update:
-            ALL_TYPES = object()
-
-        class InlineKeyboardButton:
-            def __init__(self, text: str, callback_data: str) -> None:
-                self.text = text
-                self.callback_data = callback_data
-
-        class InlineKeyboardMarkup:
-            def __init__(self, keyboard) -> None:
-                self.keyboard = keyboard
-
-        telegram.Update = Update
-        telegram.InlineKeyboardButton = InlineKeyboardButton
-        telegram.InlineKeyboardMarkup = InlineKeyboardMarkup
-        sys.modules["telegram"] = telegram
-
-    if "telegram.ext" not in sys.modules:
-        telegram_ext = types.ModuleType("telegram.ext")
-
-        async def _async_noop(*args, **kwargs) -> None:
-            return None
-
-        class ApplicationBuilder:
-            def token(self, token: str):
-                return self
-
-            def connection_pool_size(self, size: int):
-                return self
-
-            def pool_timeout(self, timeout: float | None):
-                return self
-
-            def get_updates_connection_pool_size(self, size: int):
-                return self
-
-            def get_updates_pool_timeout(self, timeout: float | None):
-                return self
-
-            def build(self):
-                return types.SimpleNamespace(
-                    add_handler=lambda *args, **kwargs: None,
-                    bot=types.SimpleNamespace(send_message=_async_noop),
-                    updater=types.SimpleNamespace(
-                        start_polling=_async_noop,
-                        stop=_async_noop,
-                    ),
-                    initialize=_async_noop,
-                    start=_async_noop,
-                    stop=_async_noop,
-                    shutdown=_async_noop,
-                )
-
-        class Application:
-            @staticmethod
-            def builder():
-                return ApplicationBuilder()
-
-        class CommandHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        class CallbackQueryHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        class ContextTypes:
-            DEFAULT_TYPE = object
-
-        telegram_ext.Application = Application
-        telegram_ext.CommandHandler = CommandHandler
-        telegram_ext.CallbackQueryHandler = CallbackQueryHandler
-        telegram_ext.ContextTypes = ContextTypes
-        sys.modules["telegram.ext"] = telegram_ext
+from tests.stubs import install_dependency_stubs
 
 
-_install_dependency_stubs()
+install_dependency_stubs()
 
 import bot.app as bot_app
 
@@ -289,6 +88,9 @@ class TelegramBotAppTests(unittest.TestCase):
 
         config = types.SimpleNamespace(
             telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
             get_enabled_coins=lambda: [],
         )
 
@@ -308,7 +110,13 @@ class TelegramBotAppTests(unittest.TestCase):
             def builder():
                 return FakeApplicationBuilder(application)
 
-        config = types.SimpleNamespace(telegram_bot_token="token", get_enabled_coins=lambda: [])
+        config = types.SimpleNamespace(
+            telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
+            get_enabled_coins=lambda: [],
+        )
         original_sigint = object()
         original_sigterm = object()
 
@@ -385,6 +193,55 @@ class TelegramBotAppTests(unittest.TestCase):
             self.assertIs(bound_method.__self__, telegram_bot)
             self.assertIs(bound_method.__func__, getattr(bot_app.TelegramBot, method_name))
 
+    def test_telegram_bot_run_async_closes_owned_notifier_on_shutdown(self) -> None:
+        application = FakeApplication()
+
+        class FakeApplicationModule:
+            @staticmethod
+            def builder():
+                return FakeApplicationBuilder(application)
+
+        config = types.SimpleNamespace(
+            telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
+            get_enabled_coins=lambda: [],
+        )
+
+        async def fake_wait() -> None:
+            telegram_bot._shutdown_event.set()
+            return None
+
+        async def fake_heartbeat_loop() -> None:
+            await fake_wait()
+
+        class FakeFetcherContext:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+                return None
+
+        with patch.object(bot_app, "Application", FakeApplicationModule), \
+             patch.object(bot_app, "CommandHandler", FakeCommandHandler), \
+             patch.object(bot_app, "CallbackQueryHandler", FakeCallbackQueryHandler), \
+             patch.object(bot_app, "TelegramNotifier") as mock_notifier_cls, \
+             patch.object(bot_app, "AsyncBinancePriceFetcher", return_value=FakeFetcherContext()), \
+             patch.object(bot_app, "now_in_configured_timezone", return_value=types.SimpleNamespace(strftime=lambda _fmt: "2026-03-25 10:30:45")), \
+             patch.object(bot_app.TelegramBot, "_touch_heartbeat", return_value=None), \
+             patch.object(bot_app.TelegramBot, "_heartbeat_loop", side_effect=fake_heartbeat_loop), \
+             patch.object(bot_app.signal, "signal", side_effect=lambda signum, handler: handler):
+            telegram_bot = bot_app.TelegramBot(config)
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(telegram_bot.run_async())
+            finally:
+                loop.close()
+
+        mock_notifier_cls.return_value.close.assert_called_once_with()
+
     def test_telegram_bot_registers_handlers_with_explicit_bot_methods(self) -> None:
         telegram_bot, application = self._build_bot()
 
@@ -416,6 +273,33 @@ class TelegramBotAppTests(unittest.TestCase):
 
         self.assertIs(callback_handlers[0].callback.__self__, telegram_bot)
         self.assertIs(callback_handlers[0].callback.__func__, bot_app.TelegramBot.button_callback)
+
+    def test_telegram_bot_uses_config_for_notifier_and_heartbeat_settings(self) -> None:
+        application = FakeApplication()
+
+        class FakeApplicationModule:
+            @staticmethod
+            def builder():
+                return FakeApplicationBuilder(application)
+
+        config = types.SimpleNamespace(
+            telegram_bot_token="token",
+            telegram_chat_id="chat-from-config",
+            bot_heartbeat_file="/tmp/custom-bot-heartbeat",
+            bot_heartbeat_interval_seconds=45.0,
+            get_enabled_coins=lambda: [],
+        )
+
+        with patch.object(bot_app, "Application", FakeApplicationModule), \
+             patch.object(bot_app, "CommandHandler", FakeCommandHandler), \
+             patch.object(bot_app, "CallbackQueryHandler", FakeCallbackQueryHandler), \
+             patch.object(bot_app, "TelegramNotifier") as mock_notifier_cls, \
+             patch.object(bot_app.signal, "signal", side_effect=lambda signum, handler: handler):
+            telegram_bot = bot_app.TelegramBot(config)
+
+        mock_notifier_cls.assert_called_once_with(bot_token="token", chat_id="chat-from-config")
+        self.assertEqual(telegram_bot._heartbeat_file, bot_app.Path("/tmp/custom-bot-heartbeat"))
+        self.assertEqual(telegram_bot._heartbeat_interval, 45.0)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from common.clients.http import AsyncBinancePriceFetcher
 from common.config import CoinConfig, ConfigManager
 from common.logging import logger
 from common.notifications import TelegramNotifier
+from common.runtime import SignalHandlerRegistry
 from common.utils import format_threshold, now_in_configured_timezone
 
 from . import handlers, messages
@@ -36,7 +37,10 @@ class TelegramBot:
             raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 
         self.fetcher: AsyncBinancePriceFetcher | None = None
-        self.notifier = TelegramNotifier()
+        self.notifier = TelegramNotifier(
+            bot_token=self.config.telegram_bot_token,
+            chat_id=self.config.telegram_chat_id,
+        )
 
         self.application = (
             Application.builder()
@@ -57,26 +61,16 @@ class TelegramBot:
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
         self._shutdown_event = asyncio.Event()
+        self._signal_registry = SignalHandlerRegistry()
         self._original_sigint = None
         self._original_sigterm = None
         self._signal_handlers_registered = False
 
         self.start_time: datetime | None = None
-        self._heartbeat_file = Path(os.getenv("BOT_HEARTBEAT_FILE", "/tmp/bot_heartbeat"))
-        self._heartbeat_interval = self._parse_heartbeat_interval()
+        self._heartbeat_file = Path(self.config.bot_heartbeat_file)
+        self._heartbeat_interval = self.config.bot_heartbeat_interval_seconds
 
         logger.info("Telegram Bot initialized successfully")
-
-    @staticmethod
-    def _parse_heartbeat_interval() -> float:
-        """Parse heartbeat interval from environment."""
-        try:
-            heartbeat_interval = float(os.getenv("BOT_HEARTBEAT_INTERVAL_SECONDS", "30"))
-            if math.isfinite(heartbeat_interval) and heartbeat_interval > 0:
-                return heartbeat_interval
-        except (TypeError, ValueError):
-            pass
-        return 30.0
 
     def _touch_heartbeat(self) -> None:
         """Touch heartbeat file to indicate bot event loop is alive."""
@@ -136,8 +130,9 @@ class TelegramBot:
         """Setup signal handlers for graceful shutdown."""
         if self._signal_handlers_registered:
             return
-        self._original_sigint = signal.signal(signal.SIGINT, self._signal_handler)
-        self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
+        self._signal_registry.setup(self._signal_handler)
+        self._original_sigint = self._signal_registry._original_sigint
+        self._original_sigterm = self._signal_registry._original_sigterm
         self._signal_handlers_registered = True
         logger.debug("Signal handlers registered (bot)")
 
@@ -154,19 +149,13 @@ class TelegramBot:
     @staticmethod
     def _restore_signal_handler(signum: int, original_handler) -> None:
         """Restore original signal handler, handling cross-platform differences."""
-        try:
-            signal.signal(signum, original_handler)
-        except (ValueError, OSError):
-            pass
+        SignalHandlerRegistry._restore_signal(signum, original_handler)
 
     def _restore_signal_handlers(self) -> None:
         """Restore original signal handlers on bot exit."""
         if not self._signal_handlers_registered:
             return
-        if self._original_sigint is not None:
-            self._restore_signal_handler(signal.SIGINT, self._original_sigint)
-        if self._original_sigterm is not None:
-            self._restore_signal_handler(signal.SIGTERM, self._original_sigterm)
+        self._signal_registry.restore()
         self._original_sigint = None
         self._original_sigterm = None
         self._signal_handlers_registered = False
@@ -214,15 +203,18 @@ class TelegramBot:
         exclude_coin: str | None = None,
     ) -> list[list[InlineKeyboardButton]]:
         """Build rows of enabled coin buttons."""
-        return messages._build_coin_button_rows(self, exclude_coin=exclude_coin)
+        return messages.build_coin_button_rows(
+            self.config.get_enabled_coins(),
+            exclude_coin=exclude_coin,
+        )
 
     def _build_start_keyboard(self) -> InlineKeyboardMarkup:
         """Build the keyboard shown on /start."""
-        return messages._build_start_keyboard(self)
+        return messages.build_start_keyboard(self.config.get_enabled_coins())
 
     def _build_price_keyboard(self, coin_name: str) -> InlineKeyboardMarkup:
         """Build the keyboard shown for a specific coin price update."""
-        return messages._build_price_keyboard(self, coin_name)
+        return messages.build_price_keyboard(coin_name, self.config.get_enabled_coins())
 
     def _render_all_prices_message(
         self,
@@ -230,7 +222,11 @@ class TelegramBot:
         prices: dict[str, float | None],
     ) -> str:
         """Render the shared all-prices message body."""
-        return messages._render_all_prices_message(self, enabled_coins, prices)
+        return messages.render_all_prices_message(
+            enabled_coins=enabled_coins,
+            prices=prices,
+            timestamp=self._format_timestamp(),
+        )
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
@@ -292,21 +288,24 @@ class TelegramBot:
                 await self._shutdown_event.wait()
         finally:
             logger.info("Stopping Telegram Bot...")
-            if heartbeat_task is not None:
-                heartbeat_task.cancel()
-                try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
+            try:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
 
-            updater = getattr(self.application, "updater", None)
-            if polling_started or getattr(updater, "running", False):
-                await updater.stop()
-            if started or getattr(self.application, "running", False):
-                await self.application.stop()
-            if initialized or getattr(self.application, "initialized", False):
-                await self.application.shutdown()
-            self._restore_signal_handlers()
+                updater = getattr(self.application, "updater", None)
+                if polling_started or getattr(updater, "running", False):
+                    await updater.stop()
+                if started or getattr(self.application, "running", False):
+                    await self.application.stop()
+                if initialized or getattr(self.application, "initialized", False):
+                    await self.application.shutdown()
+            finally:
+                self._restore_signal_handlers()
+                self.notifier.close()
 
     def run(self):
         """Start the bot (synchronous wrapper)."""

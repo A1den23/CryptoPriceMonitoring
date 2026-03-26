@@ -1,111 +1,12 @@
-import sys
+import asyncio
 import types
 import unittest
-import asyncio
 from unittest.mock import AsyncMock
 
-
-def _install_dependency_stubs() -> None:
-    """Install lightweight stubs so bot.handlers imports work without optional packages."""
-    if "aiohttp" not in sys.modules:
-        aiohttp = types.ModuleType("aiohttp")
-
-        class ClientError(Exception):
-            pass
-
-        class ClientSession:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            async def close(self) -> None:
-                return None
-
-        class ClientTimeout:
-            def __init__(self, total=None) -> None:
-                self.total = total
-
-        aiohttp.ClientError = ClientError
-        aiohttp.ClientSession = ClientSession
-        aiohttp.ClientTimeout = ClientTimeout
-        sys.modules["aiohttp"] = aiohttp
-
-    if "telegram" not in sys.modules:
-        telegram = types.ModuleType("telegram")
-
-        class Update:
-            ALL_TYPES = object()
-
-        class InlineKeyboardButton:
-            def __init__(self, text: str, callback_data: str) -> None:
-                self.text = text
-                self.callback_data = callback_data
-
-        class InlineKeyboardMarkup:
-            def __init__(self, keyboard) -> None:
-                self.keyboard = keyboard
-
-        telegram.Update = Update
-        telegram.InlineKeyboardButton = InlineKeyboardButton
-        telegram.InlineKeyboardMarkup = InlineKeyboardMarkup
-        sys.modules["telegram"] = telegram
-
-    if "telegram.ext" not in sys.modules:
-        telegram_ext = types.ModuleType("telegram.ext")
-
-        async def _async_noop(*args, **kwargs) -> None:
-            return None
-
-        class ApplicationBuilder:
-            def token(self, token: str):
-                return self
-
-            def connection_pool_size(self, size: int):
-                return self
-
-            def pool_timeout(self, timeout: float | None):
-                return self
-
-            def get_updates_connection_pool_size(self, size: int):
-                return self
-
-            def get_updates_pool_timeout(self, timeout: float | None):
-                return self
-
-            def build(self):
-                return types.SimpleNamespace(
-                    add_handler=lambda *args, **kwargs: None,
-                    bot=types.SimpleNamespace(send_message=_async_noop),
-                    updater=types.SimpleNamespace(start_polling=_async_noop, stop=_async_noop),
-                    initialize=_async_noop,
-                    start=_async_noop,
-                    stop=_async_noop,
-                    shutdown=_async_noop,
-                )
-
-        class Application:
-            @staticmethod
-            def builder():
-                return ApplicationBuilder()
-
-        class CommandHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        class CallbackQueryHandler:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-        class ContextTypes:
-            DEFAULT_TYPE = object
-
-        telegram_ext.Application = Application
-        telegram_ext.CommandHandler = CommandHandler
-        telegram_ext.CallbackQueryHandler = CallbackQueryHandler
-        telegram_ext.ContextTypes = ContextTypes
-        sys.modules["telegram.ext"] = telegram_ext
+from tests.stubs import install_dependency_stubs
 
 
-_install_dependency_stubs()
+install_dependency_stubs()
 
 from bot.handlers import button_callback, price_command, send_price_update
 from common.config import CoinConfig
@@ -163,19 +64,15 @@ class PriceCommandHandlerTests(unittest.TestCase):
                 self._get_price = AsyncMock(return_value=95123.456)
                 self._send_or_edit_message = AsyncMock()
 
-            @staticmethod
-            def _chunk_buttons(buttons, row_size: int = 2):
-                return [buttons[i:i + row_size] for i in range(0, len(buttons), row_size)]
-
             def _build_coin_button_rows(self, exclude_coin=None):
-                from bot.messages import _build_coin_button_rows
+                from bot.messages import build_coin_button_rows
 
-                return _build_coin_button_rows(self, exclude_coin=exclude_coin)
+                return build_coin_button_rows(self.config.get_enabled_coins(), exclude_coin=exclude_coin)
 
             def _build_price_keyboard(self, coin_name):
-                from bot.messages import _build_price_keyboard
+                from bot.messages import build_price_keyboard
 
-                return _build_price_keyboard(self, coin_name)
+                return build_price_keyboard(coin_name, self.config.get_enabled_coins())
 
             @staticmethod
             def _format_timestamp():

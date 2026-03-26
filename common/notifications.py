@@ -2,7 +2,6 @@
 Telegram notification utilities
 """
 
-import os
 import threading
 import time
 from collections import deque
@@ -19,8 +18,8 @@ class TelegramNotifier:
     API_ORIGIN = "https://api.telegram.org"
 
     def __init__(self, bot_token: str | None = None, chat_id: str | None = None) -> None:
-        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+        self.bot_token = bot_token
+        self.chat_id = chat_id
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=5,
