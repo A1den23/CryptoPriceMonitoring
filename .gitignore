@@ -64,6 +64,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+data/
 
 # Temporary files
 *.pid
