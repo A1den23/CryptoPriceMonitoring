@@ -774,6 +774,7 @@ class ConfigManagerRegressionTests(unittest.TestCase):
                 "STABLECOIN_DEPEG_THRESHOLD_PERCENT": "7.5",
                 "STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS": "90",
                 "STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS": "1800",
+                "STABLECOIN_UNIVERSE_CACHE_PATH": "/app/data/custom-top25.json",
             },
             clear=True,
         ), patch("common.config.load_environment"):
@@ -784,6 +785,7 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         self.assertEqual(config.stablecoin_depeg_threshold_percent, 7.5)
         self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 90)
         self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 1800)
+        self.assertEqual(config.stablecoin_universe_cache_path, "/app/data/custom-top25.json")
 
     def test_config_manager_falls_back_to_stablecoin_depeg_defaults(self) -> None:
         with patch.dict(os.environ, {}, clear=True), patch("common.config.load_environment"):
@@ -794,6 +796,7 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         self.assertEqual(config.stablecoin_depeg_threshold_percent, 5.0)
         self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 60)
         self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 300)
+        self.assertEqual(config.stablecoin_universe_cache_path, "data/stablecoin_top25.json")
 
     def test_config_manager_reads_runtime_notification_and_heartbeat_settings(self) -> None:
         with patch.dict(
@@ -919,6 +922,23 @@ class DefiLlamaClientRegressionTests(unittest.TestCase):
             ],
         )
 
+    def test_defillama_client_parse_stablecoins_returns_all_ranked_snapshots_when_top_n_is_none(self) -> None:
+        from common.clients.defillama import DefiLlamaClient
+
+        payload = {
+            "peggedAssets": [
+                {"name": "USDC", "symbol": "USDC", "price": 1.0, "circulating": 2000},
+                {"name": "Tether", "symbol": "USDT", "price": 1.0, "circulating": 3000},
+                {"name": "DAI", "symbol": "DAI", "price": 1.0, "circulating": 1000},
+            ]
+        }
+
+        client = DefiLlamaClient()
+        snapshots = client.parse_stablecoins(payload, top_n=None)
+
+        self.assertEqual([snapshot.symbol for snapshot in snapshots], ["USDT", "USDC", "DAI"])
+        self.assertEqual([snapshot.rank for snapshot in snapshots], [1, 2, 3])
+
 
 class DefiLlamaClientAsyncRegressionTests(unittest.TestCase):
     def test_defillama_client_fetch_stablecoins_uses_async_session(self) -> None:
@@ -976,6 +996,34 @@ class DefiLlamaClientAsyncRegressionTests(unittest.TestCase):
         response.raise_for_status.assert_called_once_with()
         response.json.assert_awaited_once_with()
 
+    def test_defillama_client_fetch_all_stablecoins_uses_async_session(self) -> None:
+        from common.clients.defillama import DefiLlamaClient
+
+        payload = {
+            "peggedAssets": [
+                {"name": "USDC", "symbol": "USDC", "price": 0.999, "circulating": 1_500},
+                {"name": "USDT", "symbol": "USDT", "price": 1.0, "circulating": 2_000},
+                {"name": "DAI", "symbol": "DAI", "price": 1.001, "circulating": 500},
+            ]
+        }
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.raise_for_status = Mock()
+        response.json = AsyncMock(return_value=payload)
+        session = Mock()
+        session.get.return_value = response
+
+        client = DefiLlamaClient()
+        client.session = session
+
+        snapshots = asyncio.run(client.fetch_all_stablecoins())
+
+        self.assertEqual([snapshot.symbol for snapshot in snapshots], ["USDT", "USDC", "DAI"])
+        self.assertEqual([snapshot.rank for snapshot in snapshots], [1, 2, 3])
+        session.get.assert_called_once_with("https://stablecoins.llama.fi/stablecoins")
+        response.raise_for_status.assert_called_once_with()
+        response.json.assert_awaited_once_with()
+
     def test_defillama_client_close_awaits_session_close(self) -> None:
         from common.clients.defillama import DefiLlamaClient
 
@@ -998,6 +1046,7 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
             stablecoin_depeg_alert_cooldown_seconds=cooldown_seconds,
             stablecoin_depeg_top_n=25,
             stablecoin_depeg_poll_interval_seconds=300,
+            stablecoin_universe_cache_path="/tmp/stablecoin_top25.json",
         )
         return StablecoinDepegMonitor(config=config, notifier=notifier, client=object())
 
@@ -1099,57 +1148,51 @@ class StablecoinDepegMonitorPollingTests(unittest.TestCase):
             stablecoin_depeg_alert_cooldown_seconds=3600,
             stablecoin_depeg_top_n=top_n,
             stablecoin_depeg_poll_interval_seconds=300,
+            stablecoin_universe_cache_path="/tmp/stablecoin_top25.json",
         )
         return StablecoinDepegMonitor(config=config, notifier=notifier, client=client)
 
-    def test_stablecoin_monitor_processes_top_n_snapshots_from_client(self) -> None:
+    def test_stablecoin_monitor_processes_cached_universe_snapshots(self) -> None:
         from common.clients.defillama import StablecoinSnapshot
 
         notifier = StubNotifier()
-        calls = []
-
-        async def fetch_stablecoins(top_n: int):
-            calls.append(top_n)
-            snapshots = [
-                StablecoinSnapshot("USDT", "USDT", 1.0, 2000.0, 1),
-                StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 2),
-                StablecoinSnapshot("DAI", "DAI", 0.93, 500.0, 3),
-            ]
-            return snapshots[:top_n]
-
-        client = types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins)
+        client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[]))
         stablecoin_monitor = self._build_stablecoin_monitor(notifier, client, top_n=2)
 
-        alerts = asyncio.run(stablecoin_monitor.run_once())
+        with patch(
+            "monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe",
+            new=AsyncMock(
+                return_value=[
+                    StablecoinSnapshot("USDT", "USDT", 1.0, 2000.0, 1),
+                    StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 2),
+                ]
+            ),
+        ) as resolver:
+            alerts = asyncio.run(stablecoin_monitor.run_once())
 
-        self.assertEqual(calls, [2])
+        resolver.assert_awaited_once_with(client, "/tmp/stablecoin_top25.json")
         self.assertEqual(alerts, 1)
         self.assertEqual(len(notifier.messages), 1)
         self.assertIn("USDC", notifier.messages[0])
 
     def test_stablecoin_monitor_skips_failed_poll_and_continues(self) -> None:
         notifier = StubNotifier()
-        calls = []
-
-        async def fetch_stablecoins(top_n: int):
-            calls.append(top_n)
-            if len(calls) == 1:
-                raise RuntimeError("boom")
-            return []
+        resolver = AsyncMock(side_effect=[RuntimeError("boom"), []])
 
         async def fake_sleep(seconds: int) -> None:
-            if len(calls) >= 2:
+            if resolver.await_count >= 2:
                 raise asyncio.CancelledError
 
-        client = types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins)
+        client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[]))
         stablecoin_monitor = self._build_stablecoin_monitor(notifier, client, top_n=2)
 
-        with patch("monitor.stablecoin_depeg_monitor.asyncio.sleep", side_effect=fake_sleep), \
+        with patch("monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe", new=resolver), \
+             patch("monitor.stablecoin_depeg_monitor.asyncio.sleep", side_effect=fake_sleep), \
              patch("monitor.stablecoin_depeg_monitor.logger.error") as mock_error:
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(stablecoin_monitor.run())
 
-        self.assertEqual(calls, [2, 2])
+        self.assertEqual(resolver.await_count, 2)
         self.assertEqual(notifier.messages, [])
         mock_error.assert_called_once()
 
@@ -1163,80 +1206,75 @@ class StablecoinDepegMonitorAsyncPollingTests(unittest.TestCase):
             stablecoin_depeg_alert_cooldown_seconds=3600,
             stablecoin_depeg_top_n=top_n,
             stablecoin_depeg_poll_interval_seconds=300,
+            stablecoin_universe_cache_path="/tmp/stablecoin_top25.json",
         )
         return StablecoinDepegMonitor(config=config, notifier=notifier, client=client)
 
-    def test_stablecoin_monitor_run_once_awaits_async_client_and_sends_alerts(self) -> None:
+    def test_stablecoin_monitor_run_once_awaits_cached_universe_resolution_and_sends_alerts(self) -> None:
         from common.clients.defillama import StablecoinSnapshot
 
         notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
-        client_calls = []
+        client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[]))
 
-        async def fetch_stablecoins(top_n: int):
-            client_calls.append(top_n)
-            return [StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 1)]
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier, client)
 
-        stablecoin_monitor = self._build_stablecoin_monitor(
-            notifier,
-            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
-        )
-
-        with patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
+        with patch(
+            "monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe",
+            new=AsyncMock(return_value=[StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 1)]),
+        ) as resolver, patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
             async def invoke(func, *args, **kwargs):
                 return func(*args, **kwargs)
 
             mock_to_thread.side_effect = invoke
             alerts = asyncio.run(stablecoin_monitor.run_once())
 
-        self.assertEqual(client_calls, [2])
+        resolver.assert_awaited_once_with(client, "/tmp/stablecoin_top25.json")
         self.assertEqual(alerts, 1)
         mock_to_thread.assert_awaited_once()
         notifier.send_message.assert_called_once()
 
     def test_stablecoin_monitor_run_continues_after_failed_async_poll(self) -> None:
         notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
-        calls = []
-
-        async def fetch_stablecoins(top_n: int):
-            calls.append(top_n)
-            if len(calls) == 1:
-                raise RuntimeError("boom")
-            return []
+        resolver = AsyncMock(side_effect=[RuntimeError("boom"), []])
 
         async def fake_sleep(seconds: int) -> None:
-            if len(calls) >= 2:
+            if resolver.await_count >= 2:
                 raise asyncio.CancelledError
 
         stablecoin_monitor = self._build_stablecoin_monitor(
             notifier,
-            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+            types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[])),
         )
 
-        with patch("monitor.stablecoin_depeg_monitor.asyncio.sleep", side_effect=fake_sleep), \
+        with patch("monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe", new=resolver), \
+             patch("monitor.stablecoin_depeg_monitor.asyncio.sleep", side_effect=fake_sleep), \
              patch("monitor.stablecoin_depeg_monitor.logger.error") as mock_error:
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(stablecoin_monitor.run())
 
-        self.assertEqual(calls, [2, 2])
+        self.assertEqual(resolver.await_count, 2)
         mock_error.assert_called_once()
 
     def test_stablecoin_monitor_run_once_logs_successful_poll_summary(self) -> None:
         from common.clients.defillama import StablecoinSnapshot
 
         notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
-
-        async def fetch_stablecoins(top_n: int):
-            return [
-                StablecoinSnapshot("USDT", "USDT", 1.0, 2000.0, 1),
-                StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 2),
-            ]
+        client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[]))
 
         stablecoin_monitor = self._build_stablecoin_monitor(
             notifier,
-            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+            client,
         )
 
-        with patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread, \
+        with patch(
+            "monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe",
+            new=AsyncMock(
+                return_value=[
+                    StablecoinSnapshot("USDT", "USDT", 1.0, 2000.0, 1),
+                    StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 2),
+                ]
+            ),
+        ), patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread, \
              patch("monitor.stablecoin_depeg_monitor.logger.info") as mock_info:
             async def invoke(func, *args, **kwargs):
                 return func(*args, **kwargs)
@@ -1249,17 +1287,17 @@ class StablecoinDepegMonitorAsyncPollingTests(unittest.TestCase):
 
     def test_stablecoin_monitor_run_propagates_cancelled_error(self) -> None:
         notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
-
-        async def fetch_stablecoins(top_n: int):
-            raise asyncio.CancelledError
-
         stablecoin_monitor = self._build_stablecoin_monitor(
             notifier,
-            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+            types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[])),
         )
 
-        with self.assertRaises(asyncio.CancelledError):
-            asyncio.run(stablecoin_monitor.run_once())
+        with patch(
+            "monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(stablecoin_monitor.run_once())
 
 
 class FakeCompletedTask:
@@ -1885,6 +1923,7 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
             telegram_chat_id="chat",
             bot_heartbeat_file="/tmp/bot-heartbeat-test",
             bot_heartbeat_interval_seconds=30.0,
+            stablecoin_universe_cache_path="/tmp/stablecoin_top25.json",
             get_enabled_coins=lambda: [],
         )
 
@@ -1932,10 +1971,19 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
             "TelegramBot.stablecoins_command is not implemented yet",
         )
 
-        with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
+        resolver = AsyncMock(return_value=self._build_snapshots()[:25])
+
+        with (
+            patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True),
+            patch("bot.handlers.resolve_live_snapshots_for_cached_universe", new=resolver),
+        ):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
-        self.assertEqual(stablecoin_client.calls, [25])
+        self.assertEqual(stablecoin_client.calls, [])
+        resolver.assert_awaited_once_with(
+            stablecoin_client,
+            telegram_bot.config.stablecoin_universe_cache_path,
+        )
         telegram_bot._send_or_edit_message.assert_awaited_once()
         send_args = telegram_bot._send_or_edit_message.await_args.args
         self.assertEqual(send_args[0], update.effective_chat.id)
@@ -1962,10 +2010,19 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
             "TelegramBot.stablecoins_command is not implemented yet",
         )
 
-        with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
+        resolver = AsyncMock(side_effect=ValueError("missing cache"))
+
+        with (
+            patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True),
+            patch("bot.handlers.resolve_live_snapshots_for_cached_universe", new=resolver),
+        ):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
-        self.assertEqual(stablecoin_client.calls, [25])
+        self.assertEqual(stablecoin_client.calls, [])
+        resolver.assert_awaited_once_with(
+            stablecoin_client,
+            telegram_bot.config.stablecoin_universe_cache_path,
+        )
         telegram_bot._send_or_edit_message.assert_awaited_once()
         sent_text = telegram_bot._send_or_edit_message.await_args.args[1]
         self.assertIn("稳定币价格", sent_text)
@@ -1984,9 +2041,23 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
             ]
         )
 
-        with patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True):
+        resolver = AsyncMock(
+            return_value=[
+                StablecoinSnapshot("USD <One> & Co", "USD<T>", 0.9987, 150_000_000_000.0, 1),
+            ]
+        )
+
+        with (
+            patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True),
+            patch("bot.handlers.resolve_live_snapshots_for_cached_universe", new=resolver),
+        ):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
+        self.assertEqual(stablecoin_client.calls, [])
+        resolver.assert_awaited_once_with(
+            stablecoin_client,
+            telegram_bot.config.stablecoin_universe_cache_path,
+        )
         sent_text = telegram_bot._send_or_edit_message.await_args.args[1]
         self.assertIn("USD &lt;One&gt; &amp; Co", sent_text)
         self.assertIn("USD&lt;T&gt;", sent_text)
@@ -2118,6 +2189,11 @@ class EnvExampleRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=60", content)
         self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300", content)
 
+    def test_env_example_documents_stablecoin_universe_cache_path(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+
+        self.assertIn("STABLECOIN_UNIVERSE_CACHE_PATH=/app/data/stablecoin_top25.json", content)
+
 
 class StablecoinDocumentationRegressionTests(unittest.TestCase):
     def test_deployment_doc_includes_stablecoin_depeg_settings(self) -> None:
@@ -2128,6 +2204,14 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
         self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=60", content)
         self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300", content)
+
+    def test_deployment_doc_documents_stablecoin_universe_refresh_workflow(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text()
+
+        self.assertIn("STABLECOIN_UNIVERSE_CACHE_PATH", content)
+        self.assertIn("python -m common.stablecoin_universe refresh", content)
+        self.assertIn("stablecoin-cache", content)
+        self.assertIn("0 2 * * *", content)
 
     def test_readme_describes_stablecoin_threshold_as_configurable(self) -> None:
         content = (Path(__file__).resolve().parents[1] / "README.md").read_text()

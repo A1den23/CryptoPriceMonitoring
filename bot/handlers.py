@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 
 from common.clients.defillama import DefiLlamaClient
 from common.logging import logger
+from common.stablecoin_universe import resolve_live_snapshots_for_cached_universe
 
 from .messages import (
     render_help_message,
@@ -113,7 +114,10 @@ async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAUL
     """Handle /stablecoins command."""
     try:
         async with DefiLlamaClient() as client:
-            stablecoins = await client.fetch_stablecoins(top_n=25)
+            stablecoins = await resolve_live_snapshots_for_cached_universe(
+                client,
+                self.config.stablecoin_universe_cache_path,
+            )
         message = render_stablecoin_prices_message(stablecoins, self._format_timestamp())
         await self._send_or_edit_message(update.effective_chat.id, message)
     except Exception as exc:

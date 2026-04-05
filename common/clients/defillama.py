@@ -47,7 +47,7 @@ class DefiLlamaClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         await self.close()
 
-    def parse_stablecoins(self, payload: dict, top_n: int) -> list[StablecoinSnapshot]:
+    def parse_stablecoins(self, payload: dict, top_n: int | None) -> list[StablecoinSnapshot]:
         pegged_assets = payload.get("peggedAssets")
         if not isinstance(pegged_assets, list):
             logger.error("Invalid DefiLlama payload: missing peggedAssets list")
@@ -91,6 +91,7 @@ class DefiLlamaClient:
             )
 
         snapshots.sort(key=lambda item: item.circulating, reverse=True)
+        selected = snapshots if top_n is None else snapshots[:top_n]
         ranked = [
             StablecoinSnapshot(
                 name=item.name,
@@ -99,7 +100,7 @@ class DefiLlamaClient:
                 circulating=item.circulating,
                 rank=index,
             )
-            for index, item in enumerate(snapshots[:top_n], start=1)
+            for index, item in enumerate(selected, start=1)
         ]
         return ranked
 
@@ -109,3 +110,10 @@ class DefiLlamaClient:
             response.raise_for_status()
             payload = await response.json()
             return self.parse_stablecoins(payload, top_n=top_n)
+
+    async def fetch_all_stablecoins(self) -> list[StablecoinSnapshot]:
+        session = await self._get_session()
+        async with session.get(f"{self.base_url}/stablecoins") as response:
+            response.raise_for_status()
+            payload = await response.json()
+            return self.parse_stablecoins(payload, top_n=None)

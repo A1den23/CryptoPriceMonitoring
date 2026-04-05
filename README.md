@@ -119,8 +119,6 @@ docker compose down
 | `LOG_LEVEL` | 日志级别（`DEBUG/INFO/WARNING/ERROR`） | `INFO` |
 | `TIMEZONE` | 时区（如 `Asia/Shanghai`, `UTC`, `America/New_York`） | `Asia/Shanghai` |
 | `COIN_LIST` | 逗号分隔的币种名 | `BTC,ETH,SOL,USD1` |
-
-说明：`TIMEZONE` 优先使用 `zoneinfo` 解析；若运行环境缺少对应时区数据，则会退回到 fixed-offset fallback。该 fallback 为近似行为，DST（夏令时）切换期间可能不完全准确。
 | `MILESTONE_ALERT_COOLDOWN_SECONDS` | 里程碑告警冷却（秒） | 600 |
 | `VOLATILITY_ALERT_COOLDOWN_SECONDS` | 波动告警冷却（秒） | 60 |
 | `VOLUME_ALERT_COOLDOWN_SECONDS` | 成交量告警冷却（秒） | 5 |
@@ -130,9 +128,14 @@ docker compose down
 | `BOT_HEARTBEAT_INTERVAL_SECONDS` | Bot 心跳文件更新间隔 | 30 |
 | `STABLECOIN_DEPEG_MONITOR_ENABLED` | 是否启用稳定币脱锚监控 | `true` |
 | `STABLECOIN_DEPEG_TOP_N` | 监控市值前 N 个稳定币 | `25` |
+| `STABLECOIN_UNIVERSE_CACHE_PATH` | 每日稳定币 universe 缓存文件 | `/app/data/stablecoin_top25.json`（容器推荐值） |
 | `STABLECOIN_DEPEG_THRESHOLD_PERCENT` | 偏离 $1 的告警阈值百分比 | `5.0` |
 | `STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS` | DefiLlama 轮询间隔（秒） | `60` |
 | `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` | 同一稳定币重复告警冷却（秒） | `300` |
+
+说明：`TIMEZONE` 优先使用 `zoneinfo` 解析；若运行环境缺少对应时区数据，则会退回到 fixed-offset fallback。该 fallback 为近似行为，DST（夏令时）切换期间可能不完全准确。
+
+补充：`STABLECOIN_UNIVERSE_CACHE_PATH` 在代码中的兜底默认值是 `data/stablecoin_top25.json`；Docker / Compose 部署推荐显式设置为 `/app/data/stablecoin_top25.json`，以便通过共享 volume 在 bot 和 monitor 间复用同一份缓存。
 
 ### 每个币种配置
 
@@ -209,7 +212,31 @@ BTC_VOLUME_ALERT_MULTIPLIER=10.0
 
 - 该功能独立于 `COIN_LIST`，启用时无需把稳定币加入 `COIN_LIST`
 - 默认 ±5%，实际阈值由 `STABLECOIN_DEPEG_THRESHOLD_PERCENT` 控制
+- `/stablecoins` 与脱锚监控共享 `STABLECOIN_UNIVERSE_CACHE_PATH` 指向的每日缓存 universe
+- Docker 默认通过 `stablecoin-cache` volume 共享 `/app/data`，让 bot 和 monitor 读取同一份缓存
+- 需要先执行 `python -m common.stablecoin_universe refresh` 生成缓存，再启动依赖该缓存的功能
+- 建议宿主机用 cron 在北京时间每天 `0 2 * * *` 自动执行刷新命令
 - 修改上述环境变量后需要重启服务
+
+### 5) 每日稳定币 universe 刷新
+
+首次部署后，先生成共享缓存：
+
+```bash
+docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh
+```
+
+如需自动刷新，可在宿主机配置北京时间凌晨 2 点 cron：
+
+```cron
+0 2 * * * cd /path/to/CryptoPriceMonitoring && /usr/bin/docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh >> logs/stablecoin-refresh.log 2>&1
+```
+
+说明：
+
+- `stablecoin-cache` volume 会把 `/app/data/stablecoin_top25.json` 共享给 `crypto-monitor` 和 `crypto-bot`
+- 如果宿主机不是 `Asia/Shanghai` 时区，请先换算或单独设置 cron 时区
+- 在缓存尚未生成前，`/stablecoins` 和稳定币脱锚监控会失败并记录错误日志
 
 ## 常用运维命令
 

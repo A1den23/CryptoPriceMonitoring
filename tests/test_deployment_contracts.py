@@ -66,6 +66,23 @@ class DeploymentContractsTests(unittest.TestCase):
         self.assertIn("/price BTC", deployment)
         self.assertRegex(deployment, r"/price[\s\S]{0,80}(选择|弹出)")
 
+    def test_deployment_docs_cover_stablecoin_universe_refresh_workflow(self) -> None:
+        deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+
+        self.assertIn("STABLECOIN_UNIVERSE_CACHE_PATH", deployment)
+        self.assertIn("python -m common.stablecoin_universe refresh", deployment)
+        self.assertIn("0 2 * * *", deployment)
+        self.assertIn("stablecoin-cache", deployment)
+
+    def test_readme_documents_stablecoin_universe_cache_path(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("STABLECOIN_UNIVERSE_CACHE_PATH", readme)
+        self.assertIn("/app/data/stablecoin_top25.json", readme)
+        self.assertIn("python -m common.stablecoin_universe refresh", readme)
+        self.assertIn("0 2 * * *", readme)
+        self.assertIn("stablecoin-cache", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

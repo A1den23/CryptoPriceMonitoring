@@ -9,6 +9,7 @@ from datetime import datetime
 
 from common.clients.defillama import DefiLlamaClient, StablecoinSnapshot
 from common.logging import logger
+from common.stablecoin_universe import resolve_live_snapshots_for_cached_universe
 from common.utils import now_in_configured_timezone
 
 
@@ -27,7 +28,7 @@ class StablecoinDepegMonitor:
         self.client = client
         self.threshold_percent = config.stablecoin_depeg_threshold_percent
         self.cooldown_seconds = config.stablecoin_depeg_alert_cooldown_seconds
-        self.top_n = config.stablecoin_depeg_top_n
+        self.cache_path = config.stablecoin_universe_cache_path
         self.poll_interval_seconds = config.stablecoin_depeg_poll_interval_seconds
         self._states: dict[str, StablecoinAlertState] = {}
 
@@ -92,7 +93,10 @@ class StablecoinDepegMonitor:
         return await asyncio.to_thread(self.notifier.send_message, message)
 
     async def run_once(self) -> int:
-        snapshots = await self.client.fetch_stablecoins(top_n=self.top_n)
+        snapshots = await resolve_live_snapshots_for_cached_universe(
+            self.client,
+            self.cache_path,
+        )
         alerts = 0
         for snapshot in snapshots:
             alert = self._build_alert_message(snapshot)

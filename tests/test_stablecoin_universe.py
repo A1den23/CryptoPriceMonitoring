@@ -1,0 +1,162 @@
+import json
+import sys
+import types
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock
+
+from tests.stubs import install_dependency_stubs
+
+
+WORKTREE_ROOT = Path(__file__).resolve().parents[1]
+if str(WORKTREE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKTREE_ROOT))
+
+
+install_dependency_stubs()
+
+from common.clients.defillama import StablecoinSnapshot
+from common.stablecoin_universe import (
+    load_cached_stablecoin_universe,
+    refresh_stablecoin_universe,
+    resolve_live_snapshots_for_cached_universe,
+    write_cached_stablecoin_universe,
+    CachedStablecoinUniverse,
+)
+
+
+class StablecoinUniverseCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_writes_cache_file(self) -> None:
+        snapshots = [StablecoinSnapshot("Tether", "USDT", 1.0, 100.0, 1)]
+        client = types.SimpleNamespace(fetch_stablecoins=AsyncMock(return_value=snapshots))
+
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+
+            cached = await refresh_stablecoin_universe(client, cache_path)
+            reloaded = load_cached_stablecoin_universe(cache_path)
+
+        self.assertEqual(client.fetch_stablecoins.await_count, 1)
+        self.assertEqual(client.fetch_stablecoins.await_args.args, ())
+        self.assertEqual(client.fetch_stablecoins.await_args.kwargs, {"top_n": 25})
+        self.assertEqual(cached.top_n, 25)
+        self.assertEqual([item.symbol for item in cached.snapshots], ["USDT"])
+        self.assertEqual(reloaded.top_n, 25)
+        self.assertEqual([item.symbol for item in reloaded.snapshots], ["USDT"])
+
+    async def test_refresh_failure_keeps_previous_cache_file(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "refreshed_at": "2026-04-05T02:00:00+08:00",
+                        "top_n": 25,
+                        "snapshots": [
+                            {
+                                "name": "Tether",
+                                "symbol": "USDT",
+                                "price": 1.0,
+                                "circulating": 100.0,
+                                "rank": 1,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            original = cache_path.read_text(encoding="utf-8")
+            client = types.SimpleNamespace(fetch_stablecoins=AsyncMock(side_effect=RuntimeError("boom")))
+
+            with self.assertRaises(RuntimeError):
+                await refresh_stablecoin_universe(client, cache_path)
+
+            self.assertEqual(cache_path.read_text(encoding="utf-8"), original)
+
+    async def test_load_cached_stablecoin_universe_raises_for_missing_file(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "missing.json"
+
+            with self.assertRaises(ValueError):
+                load_cached_stablecoin_universe(cache_path)
+
+    async def test_load_cached_stablecoin_universe_raises_for_invalid_json(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+            cache_path.write_text("{not-json", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                load_cached_stablecoin_universe(cache_path)
+
+    async def test_load_cached_stablecoin_universe_raises_for_invalid_payload_shape(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "refreshed_at": "2026-04-05T02:00:00+08:00",
+                        "top_n": 25,
+                        "snapshots": [{"symbol": "USDT"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                load_cached_stablecoin_universe(cache_path)
+
+    async def test_resolve_live_snapshots_for_cached_universe_preserves_cached_sequence_and_rank_values(self) -> None:
+        cached = CachedStablecoinUniverse(
+            refreshed_at="2026-04-05T02:00:00+08:00",
+            top_n=2,
+            snapshots=[
+                StablecoinSnapshot("USD Coin", "USDC", 1.0, 100.0, 2),
+                StablecoinSnapshot("Tether USD", "USDT", 1.0, 200.0, 1),
+            ],
+        )
+        live_snapshots = [
+            StablecoinSnapshot("Tether", "USDT", 0.999, 210.0, 1),
+            StablecoinSnapshot("USDC", "USDC", 1.001, 110.0, 2),
+            StablecoinSnapshot("DAI", "DAI", 1.0, 50.0, 3),
+        ]
+        client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=live_snapshots))
+
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+            write_cached_stablecoin_universe(cached, cache_path)
+
+            resolved = await resolve_live_snapshots_for_cached_universe(client, cache_path)
+
+        self.assertEqual([snapshot.symbol for snapshot in resolved], ["USDC", "USDT"])
+        self.assertEqual([snapshot.rank for snapshot in resolved], [2, 1])
+        self.assertEqual([snapshot.name for snapshot in resolved], ["USDC", "Tether"])
+        self.assertEqual([snapshot.price for snapshot in resolved], [1.001, 0.999])
+        self.assertEqual([snapshot.circulating for snapshot in resolved], [110.0, 210.0])
+        client.fetch_all_stablecoins.assert_awaited_once_with()
+
+    async def test_resolve_live_snapshots_for_cached_universe_raises_when_cached_symbol_missing_from_live_data(self) -> None:
+        cached = CachedStablecoinUniverse(
+            refreshed_at="2026-04-05T02:00:00+08:00",
+            top_n=2,
+            snapshots=[
+                StablecoinSnapshot("USD Coin", "USDC", 1.0, 100.0, 2),
+                StablecoinSnapshot("Tether USD", "USDT", 1.0, 200.0, 1),
+            ],
+        )
+        client = types.SimpleNamespace(
+            fetch_all_stablecoins=AsyncMock(
+                return_value=[StablecoinSnapshot("USDC", "USDC", 1.001, 110.0, 2)]
+            )
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+            write_cached_stablecoin_universe(cached, cache_path)
+
+            with self.assertRaises(ValueError):
+                await resolve_live_snapshots_for_cached_universe(client, cache_path)
+
+
+if __name__ == "__main__":
+    unittest.main()

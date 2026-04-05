@@ -35,9 +35,10 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
             stablecoin_depeg_alert_cooldown_seconds=3600,
             stablecoin_depeg_top_n=2,
             stablecoin_depeg_poll_interval_seconds=300,
+            stablecoin_universe_cache_path="/tmp/stablecoin_top25.json",
         )
         if client is None:
-            client = types.SimpleNamespace(fetch_stablecoins=AsyncMock(return_value=[]))
+            client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[]))
         return StablecoinDepegMonitor(config=config, notifier=notifier, client=client)
 
     def test_evaluate_snapshot_updates_last_alert_time_only_after_successful_send(self) -> None:
@@ -58,18 +59,19 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
     def test_run_once_counts_alert_only_after_successful_send(self) -> None:
         snapshot = StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 1)
 
-        async def fetch_stablecoins(top_n: int):
-            return [snapshot]
-
         notifier = types.SimpleNamespace(send_message=Mock(return_value=False))
         stablecoin_monitor = self._build_stablecoin_monitor(
             notifier,
-            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+            types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[snapshot])),
         )
         start_time = datetime(2026, 3, 24, tzinfo=timezone.utc)
         clock = FakeClock(start_time)
 
         with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now), \
+             patch(
+                 "monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe",
+                 new=AsyncMock(return_value=[snapshot]),
+             ), \
              patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
             async def invoke(func, *args, **kwargs):
                 return func(*args, **kwargs)
@@ -87,18 +89,19 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
     def test_run_once_records_last_alert_time_after_successful_send(self) -> None:
         snapshot = StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 1)
 
-        async def fetch_stablecoins(top_n: int):
-            return [snapshot]
-
         notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
         stablecoin_monitor = self._build_stablecoin_monitor(
             notifier,
-            types.SimpleNamespace(fetch_stablecoins=fetch_stablecoins),
+            types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[snapshot])),
         )
         start_time = datetime(2026, 3, 24, tzinfo=timezone.utc)
         clock = FakeClock(start_time)
 
         with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now), \
+             patch(
+                 "monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe",
+                 new=AsyncMock(return_value=[snapshot]),
+             ), \
              patch("monitor.stablecoin_depeg_monitor.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
             async def invoke(func, *args, **kwargs):
                 return func(*args, **kwargs)

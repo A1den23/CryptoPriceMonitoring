@@ -50,8 +50,8 @@ COPY bot/ ./bot/
 COPY monitor.py .
 COPY bot.py .
 
-# Create logs directory with proper permissions
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+# Create runtime directories with proper permissions
+RUN mkdir -p /app/logs /app/data && chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser

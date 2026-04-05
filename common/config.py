@@ -216,6 +216,10 @@ class ConfigManager:
             0,
             604800,
         )
+        self.stablecoin_universe_cache_path = os.getenv(
+            "STABLECOIN_UNIVERSE_CACHE_PATH",
+            "data/stablecoin_top25.json",
+        )
 
         # Get coin list from env or use default
         coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")
