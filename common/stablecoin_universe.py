@@ -96,11 +96,18 @@ async def resolve_live_snapshots_for_cached_universe(
 ) -> list[StablecoinSnapshot]:
     cached = load_cached_stablecoin_universe(cache_path)
     live_snapshots = await client.fetch_all_stablecoins()
+    live_by_symbol_and_name = {
+        (snapshot.symbol, snapshot.name): snapshot for snapshot in live_snapshots
+    }
     live_by_symbol = {snapshot.symbol: snapshot for snapshot in live_snapshots}
 
     resolved: list[StablecoinSnapshot] = []
     for cached_snapshot in cached.snapshots:
-        live_snapshot = live_by_symbol.get(cached_snapshot.symbol)
+        live_snapshot = live_by_symbol_and_name.get(
+            (cached_snapshot.symbol, cached_snapshot.name)
+        )
+        if live_snapshot is None:
+            live_snapshot = live_by_symbol.get(cached_snapshot.symbol)
         if live_snapshot is None:
             raise ValueError(
                 f"Cached stablecoin missing from live data: {cached_snapshot.symbol}"

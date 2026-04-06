@@ -135,6 +135,33 @@ class StablecoinUniverseCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([snapshot.circulating for snapshot in resolved], [110.0, 210.0])
         client.fetch_all_stablecoins.assert_awaited_once_with()
 
+    async def test_resolve_live_snapshots_for_cached_universe_matches_by_name_when_symbols_are_duplicated(self) -> None:
+        cached = CachedStablecoinUniverse(
+            refreshed_at="2026-04-05T02:00:00+08:00",
+            top_n=1,
+            snapshots=[
+                StablecoinSnapshot("Solstice USX", "USX", 1.0, 356_000_000.0, 20),
+            ],
+        )
+        live_snapshots = [
+            StablecoinSnapshot("Solstice USX", "USX", 0.999, 356_656_267.89, 22),
+            StablecoinSnapshot("dForce USD", "USX", 0.478, 7_234_313.94, 87),
+        ]
+        client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=live_snapshots))
+
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+            write_cached_stablecoin_universe(cached, cache_path)
+
+            resolved = await resolve_live_snapshots_for_cached_universe(client, cache_path)
+
+        self.assertEqual(len(resolved), 1)
+        self.assertEqual(resolved[0].name, "Solstice USX")
+        self.assertEqual(resolved[0].symbol, "USX")
+        self.assertEqual(resolved[0].price, 0.999)
+        self.assertEqual(resolved[0].circulating, 356_656_267.89)
+        self.assertEqual(resolved[0].rank, 20)
+
     async def test_resolve_live_snapshots_for_cached_universe_raises_when_cached_symbol_missing_from_live_data(self) -> None:
         cached = CachedStablecoinUniverse(
             refreshed_at="2026-04-05T02:00:00+08:00",
