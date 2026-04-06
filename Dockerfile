@@ -61,4 +61,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import pathlib,time,sys; c=pathlib.Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' '); now=time.time(); ok=any(marker in c and (h:=pathlib.Path(path)).exists() and (now-h.stat().st_mtime)<180 for marker,path in ((b'-m monitor','/tmp/monitor_heartbeat'),(b'-m bot','/tmp/bot_heartbeat'))); sys.exit(0 if ok else 1)" || exit 1
 
 # Default command (can be overridden in docker-compose.yml)
-CMD ["python", "-m", "monitor"]
+CMD ["python", "-m", "common.startup", "python", "-m", "monitor"]

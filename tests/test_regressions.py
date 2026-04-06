@@ -2212,6 +2212,10 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("python -m common.stablecoin_universe refresh", content)
         self.assertIn("stablecoin-cache", content)
         self.assertIn("0 2 * * *", content)
+        self.assertIn("docker compose up -d --build", content)
+        self.assertIn("首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存", content)
+        self.assertIn("仍可手动执行 `python -m common.stablecoin_universe refresh` 立即刷新缓存", content)
+        self.assertIn("仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新", content)
 
     def test_readme_describes_stablecoin_threshold_as_configurable(self) -> None:
         content = (Path(__file__).resolve().parents[1] / "README.md").read_text()

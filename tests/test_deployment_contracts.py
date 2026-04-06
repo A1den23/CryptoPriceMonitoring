@@ -73,6 +73,11 @@ class DeploymentContractsTests(unittest.TestCase):
         self.assertIn("python -m common.stablecoin_universe refresh", deployment)
         self.assertIn("0 2 * * *", deployment)
         self.assertIn("stablecoin-cache", deployment)
+        self.assertIn("docker compose up -d --build", deployment)
+        self.assertIn("首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存", deployment)
+        self.assertIn("仍可手动执行 `python -m common.stablecoin_universe refresh` 立即刷新缓存", deployment)
+        self.assertIn("仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新", deployment)
+        self.assertNotIn("每次启动都会刷新 stablecoin universe 缓存", deployment)
 
     def test_readme_documents_stablecoin_universe_cache_path(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -82,6 +87,19 @@ class DeploymentContractsTests(unittest.TestCase):
         self.assertIn("python -m common.stablecoin_universe refresh", readme)
         self.assertIn("0 2 * * *", readme)
         self.assertIn("stablecoin-cache", readme)
+        self.assertIn("docker compose up -d --build", readme)
+        self.assertIn("首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存", readme)
+        self.assertIn("仍可手动执行 `python -m common.stablecoin_universe refresh` 立即刷新缓存", readme)
+        self.assertIn("仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新", readme)
+        self.assertNotIn("每次启动都会刷新 stablecoin universe 缓存", readme)
+
+    def test_container_startup_bootstrap_contract_uses_startup_wrapper(self) -> None:
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn('CMD ["python", "-m", "common.startup", "python", "-m", "monitor"]', dockerfile)
+        self.assertIn('["python", "-m", "common.startup", "python", "-m", "monitor"]', compose)
+        self.assertIn('["python", "-m", "common.startup", "python", "-m", "bot"]', compose)
 
 
 if __name__ == "__main__":

@@ -99,18 +99,21 @@ docker compose up -d --build
 
 - Compose 会分别以 `python -m monitor` 和 `python -m bot` 作为两个服务的主入口
 - 两个服务通过 `stablecoin-cache` 共享 `/app/data`，用于读取同一份稳定币 universe 缓存
+- 首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存
 - 健康检查会按主进程命令匹配对应的心跳文件
 - `docker-compose.yml` 中保留了 `deploy.resources` 配置，但在常规 `docker compose up` 用法下它通常不是强保证；如需严格资源限制，请结合实际运行时能力单独验证
 
 ### 2.4 刷新每日稳定币 universe 缓存
 
-首次启动依赖 `/stablecoins` 或稳定币脱锚监控前，先生成当天缓存：
+首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存。
+
+如需立即补刷或手动重建，仍可手动执行 `python -m common.stablecoin_universe refresh` 立即刷新缓存：
 
 ```bash
 docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh
 ```
 
-如需宿主机每天北京时间凌晨 2 点自动刷新，可配置 cron：
+仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新：
 
 ```cron
 0 2 * * * cd /path/to/CryptoPriceMonitoring && /usr/bin/docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh >> logs/stablecoin-refresh.log 2>&1
@@ -119,6 +122,7 @@ docker compose run --rm crypto-monitor python -m common.stablecoin_universe refr
 说明：
 
 - 以上 cron 表达式是 `0 2 * * *`，即北京时间 02:00
+- 自动初始化只发生在首次启动且缓存缺失时，不是每次启动都刷新 stablecoin universe 缓存
 - 如果宿主机不是 `Asia/Shanghai` 时区，请先换算或为 cron 单独设置时区
 - 刷新命令会把结果写到 `STABLECOIN_UNIVERSE_CACHE_PATH`，默认是 `/app/data/stablecoin_top25.json`
 

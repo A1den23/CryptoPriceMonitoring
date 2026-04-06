@@ -356,7 +356,31 @@ class EntrypointImportContractTests(unittest.TestCase):
         monitor_main.assert_called_once_with()
         bot_main.assert_called_once_with()
 
-    def test_docs_and_runtime_share_module_entrypoint_contract(self) -> None:
+    def test_startup_main_loads_environment_and_delegates_command(self) -> None:
+        startup = importlib.import_module("common.startup")
+        common = importlib.import_module("common")
+        config = types.SimpleNamespace(
+            stablecoin_universe_cache_path="/app/data/stablecoin_top25.json",
+            stablecoin_depeg_top_n=25,
+        )
+
+        with (
+            mock.patch.object(sys, "argv", ["common.startup", "python", "-m", "monitor"]),
+            mock.patch.object(startup, "bootstrap_runtime", return_value=0) as bootstrap_runtime,
+            mock.patch.object(common, "load_environment") as load_environment,
+            mock.patch.object(common, "ConfigManager", return_value=config) as config_manager,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            startup.main()
+
+        load_environment.assert_called_once_with()
+        config_manager.assert_called_once_with()
+        bootstrap_runtime.assert_called_once()
+        self.assertEqual(bootstrap_runtime.call_args.kwargs["command"], ["python", "-m", "monitor"])
+        self.assertIs(bootstrap_runtime.call_args.kwargs["config"], config)
+        self.assertEqual(exit_context.exception.code, 0)
+
+    def test_docs_keep_primary_entrypoints_while_runtime_uses_startup_wrapper(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text()
         deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text()
         dockerfile = (REPO_ROOT / "Dockerfile").read_text()
@@ -366,9 +390,9 @@ class EntrypointImportContractTests(unittest.TestCase):
         self.assertIn(PRIMARY_BOT_ENTRYPOINT, readme)
         self.assertIn(PRIMARY_MONITOR_ENTRYPOINT, deployment)
         self.assertIn(PRIMARY_BOT_ENTRYPOINT, deployment)
-        self.assertIn('CMD ["python", "-m", "monitor"]', dockerfile)
-        self.assertIn('["python", "-m", "monitor"]', compose)
-        self.assertIn('["python", "-m", "bot"]', compose)
+        self.assertIn('CMD ["python", "-m", "common.startup", "python", "-m", "monitor"]', dockerfile)
+        self.assertIn('["python", "-m", "common.startup", "python", "-m", "monitor"]', compose)
+        self.assertIn('["python", "-m", "common.startup", "python", "-m", "bot"]', compose)
         self.assertIn("b'-m monitor'", dockerfile)
         self.assertIn("b'-m bot'", dockerfile)
         self.assertNotIn("CMD [\"python\", \"monitor.py\"]", dockerfile)

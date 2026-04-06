@@ -214,19 +214,23 @@ BTC_VOLUME_ALERT_MULTIPLIER=10.0
 - 默认 ±5%，实际阈值由 `STABLECOIN_DEPEG_THRESHOLD_PERCENT` 控制
 - `/stablecoins` 与脱锚监控共享 `STABLECOIN_UNIVERSE_CACHE_PATH` 指向的每日缓存 universe
 - Docker 默认通过 `stablecoin-cache` volume 共享 `/app/data`，让 bot 和 monitor 读取同一份缓存
-- 需要先执行 `python -m common.stablecoin_universe refresh` 生成缓存，再启动依赖该缓存的功能
-- 建议宿主机用 cron 在北京时间每天 `0 2 * * *` 自动执行刷新命令
+- 首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存
+- 仍可手动执行 `python -m common.stablecoin_universe refresh` 立即刷新缓存
+- 仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新
+- 自动初始化只发生在首次启动且缓存缺失时，不是每次启动都刷新 stablecoin universe 缓存
 - 修改上述环境变量后需要重启服务
 
 ### 5) 每日稳定币 universe 刷新
 
-首次部署后，先生成共享缓存：
+首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存。
+
+如需立即补刷或手动重建，仍可手动执行 `python -m common.stablecoin_universe refresh`：
 
 ```bash
 docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh
 ```
 
-如需自动刷新，可在宿主机配置北京时间凌晨 2 点 cron：
+仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新：
 
 ```cron
 0 2 * * * cd /path/to/CryptoPriceMonitoring && /usr/bin/docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh >> logs/stablecoin-refresh.log 2>&1
@@ -235,8 +239,8 @@ docker compose run --rm crypto-monitor python -m common.stablecoin_universe refr
 说明：
 
 - `stablecoin-cache` volume 会把 `/app/data/stablecoin_top25.json` 共享给 `crypto-monitor` 和 `crypto-bot`
+- 自动初始化只发生在首次启动且缓存缺失时，不是每次启动都刷新
 - 如果宿主机不是 `Asia/Shanghai` 时区，请先换算或单独设置 cron 时区
-- 在缓存尚未生成前，`/stablecoins` 和稳定币脱锚监控会失败并记录错误日志
 
 ## 常用运维命令
 
