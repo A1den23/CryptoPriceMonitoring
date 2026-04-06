@@ -2,6 +2,7 @@ import json
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock
@@ -20,9 +21,11 @@ from common.clients.defillama import StablecoinSnapshot
 from common.stablecoin_universe import (
     load_cached_stablecoin_universe,
     refresh_stablecoin_universe,
+    refresh_stablecoin_universe_from_config,
     resolve_live_snapshots_for_cached_universe,
     write_cached_stablecoin_universe,
     CachedStablecoinUniverse,
+    compute_next_stablecoin_universe_refresh_time,
 )
 
 
@@ -73,6 +76,44 @@ class StablecoinUniverseCacheTests(unittest.IsolatedAsyncioTestCase):
                 await refresh_stablecoin_universe(client, cache_path)
 
             self.assertEqual(cache_path.read_text(encoding="utf-8"), original)
+
+    def test_compute_next_stablecoin_universe_refresh_time_uses_same_day_when_time_is_in_future(self) -> None:
+        now = datetime(2026, 4, 6, 1, 30, tzinfo=timezone.utc)
+
+        next_refresh = compute_next_stablecoin_universe_refresh_time(
+            now,
+            refresh_hour=2,
+            refresh_minute=0,
+        )
+
+        self.assertEqual(next_refresh, datetime(2026, 4, 6, 2, 0, tzinfo=timezone.utc))
+
+    def test_compute_next_stablecoin_universe_refresh_time_rolls_to_next_day_when_time_has_passed(self) -> None:
+        now = datetime(2026, 4, 6, 2, 1, tzinfo=timezone.utc)
+
+        next_refresh = compute_next_stablecoin_universe_refresh_time(
+            now,
+            refresh_hour=2,
+            refresh_minute=0,
+        )
+
+        self.assertEqual(next_refresh, datetime(2026, 4, 7, 2, 0, tzinfo=timezone.utc))
+
+    async def test_refresh_stablecoin_universe_from_config_uses_cache_path_and_top_n(self) -> None:
+        snapshots = [StablecoinSnapshot("Tether", "USDT", 1.0, 100.0, 1)]
+        client = types.SimpleNamespace(fetch_stablecoins=AsyncMock(return_value=snapshots))
+
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "stablecoin_top25.json"
+            config = types.SimpleNamespace(
+                stablecoin_universe_cache_path=str(cache_path),
+                stablecoin_depeg_top_n=12,
+            )
+
+            cached = await refresh_stablecoin_universe_from_config(config, client)
+
+        self.assertEqual(cached.top_n, 12)
+        client.fetch_stablecoins.assert_awaited_once_with(top_n=12)
 
     async def test_load_cached_stablecoin_universe_raises_for_missing_file(self) -> None:
         with TemporaryDirectory() as temp_dir:

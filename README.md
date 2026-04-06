@@ -129,6 +129,9 @@ docker compose down
 | `STABLECOIN_DEPEG_MONITOR_ENABLED` | 是否启用稳定币脱锚监控 | `true` |
 | `STABLECOIN_DEPEG_TOP_N` | 监控市值前 N 个稳定币 | `25` |
 | `STABLECOIN_UNIVERSE_CACHE_PATH` | 每日稳定币 universe 缓存文件 | `/app/data/stablecoin_top25.json`（容器推荐值） |
+| `STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED` | 是否启用程序内每日自动刷新 stablecoin universe | `true` |
+| `STABLECOIN_UNIVERSE_REFRESH_HOUR` | 每日自动刷新的小时（按 `TIMEZONE`） | `2` |
+| `STABLECOIN_UNIVERSE_REFRESH_MINUTE` | 每日自动刷新的分钟（按 `TIMEZONE`） | `0` |
 | `STABLECOIN_DEPEG_THRESHOLD_PERCENT` | 偏离 $1 的告警阈值百分比 | `5.0` |
 | `STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS` | DefiLlama 轮询间隔（秒） | `60` |
 | `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` | 同一稳定币重复告警冷却（秒） | `300` |
@@ -215,8 +218,9 @@ BTC_VOLUME_ALERT_MULTIPLIER=10.0
 - `/stablecoins` 与脱锚监控共享 `STABLECOIN_UNIVERSE_CACHE_PATH` 指向的每日缓存 universe
 - Docker 默认通过 `stablecoin-cache` volume 共享 `/app/data`，让 bot 和 monitor 读取同一份缓存
 - 首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存
+- `crypto-monitor` 运行中会按 `TIMEZONE` 每天自动刷新一次 stablecoin universe 缓存，默认时间为 `02:00`
+- 可通过 `STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED`、`STABLECOIN_UNIVERSE_REFRESH_HOUR`、`STABLECOIN_UNIVERSE_REFRESH_MINUTE` 调整该行为
 - 仍可手动执行 `python -m common.stablecoin_universe refresh` 立即刷新缓存
-- 仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新
 - 自动初始化只发生在首次启动且缓存缺失时，不是每次启动都刷新 stablecoin universe 缓存
 - 修改上述环境变量后需要重启服务
 
@@ -224,23 +228,25 @@ BTC_VOLUME_ALERT_MULTIPLIER=10.0
 
 首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存。
 
+之后 `crypto-monitor` 会按 `TIMEZONE` 每天自动刷新一次该缓存，默认时间为 `02:00`。如需调整，可设置：
+
+```env
+STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED=true
+STABLECOIN_UNIVERSE_REFRESH_HOUR=2
+STABLECOIN_UNIVERSE_REFRESH_MINUTE=0
+```
+
 如需立即补刷或手动重建，仍可手动执行 `python -m common.stablecoin_universe refresh`：
 
 ```bash
 docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh
 ```
 
-仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新：
-
-```cron
-0 2 * * * cd /path/to/CryptoPriceMonitoring && /usr/bin/docker compose run --rm crypto-monitor python -m common.stablecoin_universe refresh >> logs/stablecoin-refresh.log 2>&1
-```
-
 说明：
 
 - `stablecoin-cache` volume 会把 `/app/data/stablecoin_top25.json` 共享给 `crypto-monitor` 和 `crypto-bot`
 - 自动初始化只发生在首次启动且缓存缺失时，不是每次启动都刷新
-- 如果宿主机不是 `Asia/Shanghai` 时区，请先换算或单独设置 cron 时区
+- 自动日更由 `crypto-monitor` 进程负责，不依赖宿主机 cron
 
 ## 常用运维命令
 

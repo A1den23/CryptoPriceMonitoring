@@ -775,6 +775,9 @@ class ConfigManagerRegressionTests(unittest.TestCase):
                 "STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS": "90",
                 "STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS": "1800",
                 "STABLECOIN_UNIVERSE_CACHE_PATH": "/app/data/custom-top25.json",
+                "STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED": "false",
+                "STABLECOIN_UNIVERSE_REFRESH_HOUR": "3",
+                "STABLECOIN_UNIVERSE_REFRESH_MINUTE": "15",
             },
             clear=True,
         ), patch("common.config.load_environment"):
@@ -786,6 +789,9 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 90)
         self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 1800)
         self.assertEqual(config.stablecoin_universe_cache_path, "/app/data/custom-top25.json")
+        self.assertFalse(config.stablecoin_universe_auto_refresh_enabled)
+        self.assertEqual(config.stablecoin_universe_refresh_hour, 3)
+        self.assertEqual(config.stablecoin_universe_refresh_minute, 15)
 
     def test_config_manager_falls_back_to_stablecoin_depeg_defaults(self) -> None:
         with patch.dict(os.environ, {}, clear=True), patch("common.config.load_environment"):
@@ -797,6 +803,9 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         self.assertEqual(config.stablecoin_depeg_poll_interval_seconds, 60)
         self.assertEqual(config.stablecoin_depeg_alert_cooldown_seconds, 300)
         self.assertEqual(config.stablecoin_universe_cache_path, "data/stablecoin_top25.json")
+        self.assertTrue(config.stablecoin_universe_auto_refresh_enabled)
+        self.assertEqual(config.stablecoin_universe_refresh_hour, 2)
+        self.assertEqual(config.stablecoin_universe_refresh_minute, 0)
 
     def test_config_manager_reads_runtime_notification_and_heartbeat_settings(self) -> None:
         with patch.dict(
@@ -1361,7 +1370,7 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
         stablecoin_client.close.assert_awaited_once_with()
 
-    def _build_config(self, *, stablecoin_enabled: bool):
+    def _build_config(self, *, stablecoin_enabled: bool, auto_refresh_enabled: bool = True):
         coin = CoinConfig(
             coin_name="BTC",
             enabled=True,
@@ -1387,6 +1396,10 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
             stablecoin_depeg_alert_cooldown_seconds=3600,
             stablecoin_depeg_top_n=25,
             stablecoin_depeg_poll_interval_seconds=300,
+            stablecoin_universe_auto_refresh_enabled=auto_refresh_enabled,
+            stablecoin_universe_refresh_hour=2,
+            stablecoin_universe_refresh_minute=0,
+            stablecoin_universe_cache_path="data/stablecoin_top25.json",
         )
 
     def test_ws_monitor_starts_stablecoin_task_when_enabled(self) -> None:
@@ -1454,12 +1467,50 @@ class WebSocketMultiCoinMonitorStablecoinIntegrationTests(unittest.TestCase):
 
             from monitor.ws_monitor import WebSocketMultiCoinMonitor
 
-            ws_monitor = WebSocketMultiCoinMonitor(self._build_config(stablecoin_enabled=False))
+            ws_monitor = WebSocketMultiCoinMonitor(
+                self._build_config(stablecoin_enabled=False, auto_refresh_enabled=False)
+            )
             asyncio.run(ws_monitor.run())
 
         self.assertEqual(created_task_names.count("run"), 0)
         mock_stablecoin_monitor_cls.assert_not_called()
         mock_defillama_client_cls.assert_not_called()
+
+    def test_ws_monitor_starts_refresh_client_when_auto_refresh_enabled_without_depeg_monitor(self) -> None:
+        created_task_names = []
+        stablecoin_client = AsyncMock()
+
+        def fake_create_task(coro):
+            created_task_names.append(coro.cr_code.co_name)
+            coro.close()
+            return FakeCompletedTask()
+
+        class DummyWsClient:
+            async def start(self) -> None:
+                return None
+
+            async def stop(self) -> None:
+                return None
+
+        with patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
+             patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=DummyWsClient()), \
+             patch("monitor.ws_monitor.DefiLlamaClient", return_value=stablecoin_client), \
+             patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
+             patch("monitor.ws_monitor.asyncio.wait", return_value=(set(), set())), \
+             patch("monitor.ws_monitor.StablecoinDepegMonitor") as mock_stablecoin_monitor_cls:
+            notifier = mock_notifier_cls.return_value
+            notifier.test_connection.return_value = True
+
+            from monitor.ws_monitor import WebSocketMultiCoinMonitor
+
+            ws_monitor = WebSocketMultiCoinMonitor(
+                self._build_config(stablecoin_enabled=False, auto_refresh_enabled=True)
+            )
+            asyncio.run(ws_monitor.run())
+
+        self.assertIn("_run_stablecoin_universe_refresh_loop", created_task_names)
+        mock_stablecoin_monitor_cls.assert_not_called()
+        stablecoin_client.close.assert_awaited_once_with()
 
     def test_ws_monitor_cancels_stablecoin_task_on_shutdown(self) -> None:
         class FakeTask:
@@ -2188,6 +2239,9 @@ class EnvExampleRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
         self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=60", content)
         self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300", content)
+        self.assertIn("STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED=true", content)
+        self.assertIn("STABLECOIN_UNIVERSE_REFRESH_HOUR=2", content)
+        self.assertIn("STABLECOIN_UNIVERSE_REFRESH_MINUTE=0", content)
 
     def test_env_example_documents_stablecoin_universe_cache_path(self) -> None:
         content = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
@@ -2204,6 +2258,9 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT=5", content)
         self.assertIn("STABLECOIN_DEPEG_POLL_INTERVAL_SECONDS=60", content)
         self.assertIn("STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS=300", content)
+        self.assertIn("STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED=true", content)
+        self.assertIn("STABLECOIN_UNIVERSE_REFRESH_HOUR=2", content)
+        self.assertIn("STABLECOIN_UNIVERSE_REFRESH_MINUTE=0", content)
 
     def test_deployment_doc_documents_stablecoin_universe_refresh_workflow(self) -> None:
         content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text()
@@ -2211,11 +2268,14 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_UNIVERSE_CACHE_PATH", content)
         self.assertIn("python -m common.stablecoin_universe refresh", content)
         self.assertIn("stablecoin-cache", content)
-        self.assertIn("0 2 * * *", content)
+        self.assertIn("STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED", content)
+        self.assertIn("STABLECOIN_UNIVERSE_REFRESH_HOUR", content)
+        self.assertIn("STABLECOIN_UNIVERSE_REFRESH_MINUTE", content)
         self.assertIn("docker compose up -d --build", content)
         self.assertIn("首次执行 `docker compose up -d --build` 时，如果共享缓存不存在，会自动生成 stablecoin universe 缓存", content)
+        self.assertIn("crypto-monitor` 会按 `TIMEZONE` 每天自动刷新一次", content)
         self.assertIn("仍可手动执行 `python -m common.stablecoin_universe refresh` 立即刷新缓存", content)
-        self.assertIn("仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新", content)
+        self.assertNotIn("仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新", content)
 
     def test_readme_describes_stablecoin_threshold_as_configurable(self) -> None:
         content = (Path(__file__).resolve().parents[1] / "README.md").read_text()

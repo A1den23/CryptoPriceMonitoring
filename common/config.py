@@ -220,6 +220,22 @@ class ConfigManager:
             "STABLECOIN_UNIVERSE_CACHE_PATH",
             "data/stablecoin_top25.json",
         )
+        self.stablecoin_universe_auto_refresh_enabled = os.getenv(
+            "STABLECOIN_UNIVERSE_AUTO_REFRESH_ENABLED",
+            "true",
+        ).lower() == "true"
+        self.stablecoin_universe_refresh_hour = _safe_int_env(
+            "STABLECOIN_UNIVERSE_REFRESH_HOUR",
+            2,
+            0,
+            23,
+        )
+        self.stablecoin_universe_refresh_minute = _safe_int_env(
+            "STABLECOIN_UNIVERSE_REFRESH_MINUTE",
+            0,
+            0,
+            59,
+        )
 
         # Get coin list from env or use default
         coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")

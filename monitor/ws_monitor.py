@@ -13,6 +13,10 @@ from common.config import ConfigManager
 from common.logging import logger
 from common.notifications import TelegramNotifier
 from common.runtime import SignalHandlerRegistry
+from common.stablecoin_universe import (
+    compute_next_stablecoin_universe_refresh_time,
+    refresh_stablecoin_universe_from_config,
+)
 from common.utils import now_in_configured_timezone
 
 from .price_monitor import PriceMonitor
@@ -46,6 +50,7 @@ class WebSocketMultiCoinMonitor:
         self.ws_client: BinanceWebSocketClient | None = None
         self.stablecoin_client: DefiLlamaClient | None = None
         self.stablecoin_monitor: StablecoinDepegMonitor | None = None
+        self.stablecoin_refresh_task: asyncio.Task | None = None
 
         self.last_print_time: datetime | None = None
         self.print_interval = 5
@@ -305,6 +310,35 @@ class WebSocketMultiCoinMonitor:
         except Exception as e:
             logger.error(f"Failed to enqueue reconnect alert: {e}")
 
+    async def _run_stablecoin_universe_refresh_loop(self) -> None:
+        """Refresh the stablecoin universe cache once per day at configured local time."""
+        while True:
+            now = now_in_configured_timezone()
+            next_refresh = compute_next_stablecoin_universe_refresh_time(
+                now,
+                refresh_hour=getattr(self.config, "stablecoin_universe_refresh_hour", 2),
+                refresh_minute=getattr(self.config, "stablecoin_universe_refresh_minute", 0),
+            )
+            delay_seconds = max(0.0, (next_refresh - now).total_seconds())
+            logger.info(
+                "Next stablecoin universe refresh scheduled at "
+                f"{next_refresh.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            await asyncio.sleep(delay_seconds)
+            try:
+                if self.stablecoin_client is None:
+                    self.stablecoin_client = DefiLlamaClient()
+                universe = await refresh_stablecoin_universe_from_config(
+                    self.config,
+                    self.stablecoin_client,
+                )
+                logger.info(
+                    "Stablecoin universe auto-refresh completed: "
+                    f"cache={self.config.stablecoin_universe_cache_path}, snapshots={len(universe.snapshots)}"
+                )
+            except Exception as exc:
+                logger.error(f"Stablecoin universe auto-refresh failed: {exc}")
+
     async def run(self):
         """Start WebSocket monitoring."""
         logger.info("=" * 60)
@@ -317,6 +351,7 @@ class WebSocketMultiCoinMonitor:
         ws_task = None
         shutdown_task = None
         stablecoin_task = None
+        stablecoin_refresh_task = None
         tasks: list[asyncio.Task] = []
         should_cleanup = False
         should_notify_shutdown = False
@@ -348,8 +383,19 @@ class WebSocketMultiCoinMonitor:
                 max_reconnect_attempts=None,
             )
 
-            if self.config.stablecoin_depeg_monitor_enabled:
+            auto_refresh_enabled = getattr(
+                self.config,
+                "stablecoin_universe_auto_refresh_enabled",
+                True,
+            )
+            should_enable_stablecoin_client = (
+                self.config.stablecoin_depeg_monitor_enabled
+                or auto_refresh_enabled
+            )
+            if should_enable_stablecoin_client:
                 self.stablecoin_client = DefiLlamaClient()
+
+            if self.config.stablecoin_depeg_monitor_enabled and self.stablecoin_client is not None:
                 self.stablecoin_monitor = StablecoinDepegMonitor(
                     config=self.config,
                     notifier=self.notifier,
@@ -364,6 +410,13 @@ class WebSocketMultiCoinMonitor:
             if self.stablecoin_monitor is not None:
                 stablecoin_task = asyncio.create_task(self.stablecoin_monitor.run())
                 tasks.append(stablecoin_task)
+
+            if auto_refresh_enabled:
+                stablecoin_refresh_task = asyncio.create_task(
+                    self._run_stablecoin_universe_refresh_loop()
+                )
+                self.stablecoin_refresh_task = stablecoin_refresh_task
+                tasks.append(stablecoin_refresh_task)
 
             done, pending = await asyncio.wait(
                 tasks,
@@ -388,6 +441,18 @@ class WebSocketMultiCoinMonitor:
                 else:
                     if not self._shutdown_event.is_set():
                         raise RuntimeError("Stablecoin depeg monitor exited unexpectedly without a shutdown signal")
+
+            if stablecoin_refresh_task is not None and stablecoin_refresh_task in done:
+                try:
+                    stablecoin_refresh_task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception("Stablecoin universe refresh task exited unexpectedly")
+                    raise
+                else:
+                    if not self._shutdown_event.is_set():
+                        raise RuntimeError("Stablecoin universe refresh task exited unexpectedly without a shutdown signal")
 
             if ws_task in done:
                 try:

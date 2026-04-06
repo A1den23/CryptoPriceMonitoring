@@ -174,6 +174,10 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             stablecoin_depeg_alert_cooldown_seconds=3600,
             stablecoin_depeg_top_n=25,
             stablecoin_depeg_poll_interval_seconds=300,
+            stablecoin_universe_cache_path="data/stablecoin_top25.json",
+            stablecoin_universe_auto_refresh_enabled=True,
+            stablecoin_universe_refresh_hour=2,
+            stablecoin_universe_refresh_minute=0,
         )
 
     async def test_price_monitor_flush_notification_tasks_waits_for_pending_notification(self) -> None:
@@ -198,6 +202,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_ws_monitor_run_drains_monitor_notification_tasks_on_shutdown(self) -> None:
         ws_task = FakeTask()
         shutdown_task = FakeTask()
+        refresh_task = FakeTask()
         fake_monitor = types.SimpleNamespace(flush_notification_tasks=AsyncMock())
         ws_client = types.SimpleNamespace(
             start=AsyncMock(),
@@ -210,13 +215,17 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             coro.close()
             if name == "start":
                 return ws_task
+            if name == "wait":
+                return shutdown_task
+            if name == "_run_stablecoin_universe_refresh_loop":
+                return refresh_task
             return shutdown_task
 
         with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
              patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
-             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task})):
+             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task, refresh_task})):
             notifier = mock_notifier_cls.return_value
             notifier.test_connection.return_value = True
             notifier.send_message.return_value = True
@@ -229,10 +238,13 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         ws_client.stop.assert_awaited_once_with()
         fake_monitor.flush_notification_tasks.assert_awaited_once_with()
+        self.assertTrue(refresh_task.cancel_called)
+        self.assertTrue(refresh_task.awaited)
 
     async def test_ws_monitor_run_uses_logger_instead_of_runtime_prints(self) -> None:
         ws_task = FakeTask()
         shutdown_task = FakeTask()
+        refresh_task = FakeTask()
         fake_monitor = types.SimpleNamespace(flush_notification_tasks=AsyncMock())
         ws_client = types.SimpleNamespace(
             start=AsyncMock(),
@@ -245,13 +257,17 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             coro.close()
             if name == "start":
                 return ws_task
+            if name == "wait":
+                return shutdown_task
+            if name == "_run_stablecoin_universe_refresh_loop":
+                return refresh_task
             return shutdown_task
 
         with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
              patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
-             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task})), \
+             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task, refresh_task})), \
              patch("monitor.ws_monitor.print") as mock_print:
             notifier = mock_notifier_cls.return_value
             notifier.test_connection.return_value = True
@@ -268,6 +284,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_ws_monitor_run_closes_owned_notifier_on_shutdown(self) -> None:
         ws_task = FakeTask()
         shutdown_task = FakeTask()
+        refresh_task = FakeTask()
         fake_monitor = types.SimpleNamespace(flush_notification_tasks=AsyncMock())
         ws_client = types.SimpleNamespace(
             start=AsyncMock(),
@@ -280,13 +297,17 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             coro.close()
             if name == "start":
                 return ws_task
+            if name == "wait":
+                return shutdown_task
+            if name == "_run_stablecoin_universe_refresh_loop":
+                return refresh_task
             return shutdown_task
 
         with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
              patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
-             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task})):
+             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task, refresh_task})):
             notifier = mock_notifier_cls.return_value
             notifier.test_connection.return_value = True
             notifier.send_message.return_value = True
@@ -438,6 +459,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_ws_monitor_registers_and_restores_signal_handlers_with_runtime_lifecycle(self) -> None:
         ws_task = FakeTask()
         shutdown_task = FakeTask()
+        refresh_task = FakeTask()
         ws_client = types.SimpleNamespace(
             start=AsyncMock(),
             stop=AsyncMock(),
@@ -451,13 +473,17 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             coro.close()
             if name == "start":
                 return ws_task
+            if name == "wait":
+                return shutdown_task
+            if name == "_run_stablecoin_universe_refresh_loop":
+                return refresh_task
             return shutdown_task
 
         with patch("monitor.ws_monitor.signal.signal") as mock_signal, \
              patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
-             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task})):
+             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task, refresh_task})):
             mock_signal.side_effect = [original_sigint, original_sigterm, None, None]
             notifier = mock_notifier_cls.return_value
             notifier.test_connection.return_value = True
@@ -481,6 +507,45 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 unittest.mock.call(signal.SIGTERM, original_sigterm),
             ],
         )
+
+    async def test_ws_monitor_run_creates_daily_refresh_task_when_auto_refresh_enabled(self) -> None:
+        ws_task = FakeTask()
+        shutdown_task = FakeTask()
+        refresh_task = FakeTask()
+        ws_client = types.SimpleNamespace(
+            start=AsyncMock(),
+            stop=AsyncMock(),
+            get_statistics=lambda: {},
+        )
+        created_task_names: list[str] = []
+
+        def fake_create_task(coro):
+            name = coro.cr_code.co_name
+            created_task_names.append(name)
+            coro.close()
+            if name == "start":
+                return ws_task
+            if name == "wait":
+                return shutdown_task
+            if name == "_run_stablecoin_universe_refresh_loop":
+                return refresh_task
+            return shutdown_task
+
+        with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
+             patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
+             patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
+             patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
+             patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task, refresh_task})):
+            notifier = mock_notifier_cls.return_value
+            notifier.test_connection.return_value = True
+            notifier.send_message.return_value = True
+
+            ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
+            ws_monitor._shutdown_event.set()
+
+            await ws_monitor.run()
+
+        self.assertIn("_run_stablecoin_universe_refresh_loop", created_task_names)
 
 
 if __name__ == "__main__":

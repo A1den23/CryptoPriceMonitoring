@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -75,6 +76,22 @@ def load_cached_stablecoin_universe(cache_path: str | Path) -> CachedStablecoinU
         raise ValueError(f"Invalid stablecoin universe cache: {path}") from exc
 
 
+def compute_next_stablecoin_universe_refresh_time(
+    now: datetime,
+    refresh_hour: int,
+    refresh_minute: int,
+) -> datetime:
+    next_refresh = now.replace(
+        hour=refresh_hour,
+        minute=refresh_minute,
+        second=0,
+        microsecond=0,
+    )
+    if next_refresh <= now:
+        next_refresh += timedelta(days=1)
+    return next_refresh
+
+
 async def refresh_stablecoin_universe(
     client,
     cache_path: str | Path,
@@ -88,6 +105,17 @@ async def refresh_stablecoin_universe(
     )
     write_cached_stablecoin_universe(universe, cache_path)
     return universe
+
+
+async def refresh_stablecoin_universe_from_config(
+    config: ConfigManager,
+    client,
+) -> CachedStablecoinUniverse:
+    return await refresh_stablecoin_universe(
+        client,
+        config.stablecoin_universe_cache_path,
+        top_n=config.stablecoin_depeg_top_n,
+    )
 
 
 async def resolve_live_snapshots_for_cached_universe(
@@ -126,11 +154,7 @@ async def resolve_live_snapshots_for_cached_universe(
 
 async def _refresh_from_config(config: ConfigManager) -> CachedStablecoinUniverse:
     async with DefiLlamaClient() as client:
-        return await refresh_stablecoin_universe(
-            client,
-            config.stablecoin_universe_cache_path,
-            top_n=config.stablecoin_depeg_top_n,
-        )
+        return await refresh_stablecoin_universe_from_config(config, client)
 
 
 def main() -> None:
