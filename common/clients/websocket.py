@@ -68,6 +68,7 @@ class BinanceWebSocketClient:
         self.websocket: websockets.client.WebSocketClientProtocol | None = None
         self.reconnect_count = 0
         self._stop_event = asyncio.Event()
+        self._disconnected_event = asyncio.Event()
         self._message_task: asyncio.Task | None = None
         self._ping_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
@@ -82,6 +83,14 @@ class BinanceWebSocketClient:
         self.connection_time: datetime | None = None
 
         logger.info(f"BinanceWebSocketClient initialized for {len(symbols)} symbols")
+
+    def _set_state(self, state: ConnectionState) -> None:
+        """Transition connection state and wake up waiters."""
+        self.state = state
+        if state != ConnectionState.CONNECTED:
+            self._disconnected_event.set()
+        else:
+            self._disconnected_event.clear()
 
     def _build_stream_url(self) -> str:
         """Build WebSocket URL with subscribed streams (ticker + kline)."""
@@ -182,19 +191,19 @@ class BinanceWebSocketClient:
 
             if not self._stop_event.is_set() and self.state == ConnectionState.CONNECTED:
                 logger.warning("WebSocket message stream ended cleanly")
-                self.state = ConnectionState.RECONNECTING
+                self._set_state(ConnectionState.RECONNECTING)
                 await self._trigger_disconnect_alert("Connection closed cleanly")
         except websockets.exceptions.ConnectionClosed as e:
             logger.warning(f"WebSocket connection closed: {e}")
             if not self._stop_event.is_set():
-                self.state = ConnectionState.RECONNECTING
+                self._set_state(ConnectionState.RECONNECTING)
                 await self._trigger_disconnect_alert(f"Connection closed: {e}")
         except asyncio.CancelledError:
             raise  # Re-raise to allow proper cancellation
         except Exception as e:
             logger.error(f"Error in message handler: {e}")
             if not self._stop_event.is_set():
-                self.state = ConnectionState.RECONNECTING
+                self._set_state(ConnectionState.RECONNECTING)
                 await self._trigger_disconnect_alert(f"Error: {e}")
 
     async def _trigger_disconnect_alert(self, reason: str):
@@ -241,14 +250,14 @@ class BinanceWebSocketClient:
                 await self._trigger_disconnect_alert(reason)
                 if self.websocket and not self.websocket.closed:
                     await self.websocket.close()
-                self.state = ConnectionState.RECONNECTING
+                self._set_state(ConnectionState.RECONNECTING)
                 break
             except Exception as e:
                 logger.error(f"Error sending ping: {e}")
                 await self._trigger_disconnect_alert(f"Ping failed: {e}")
                 if self.websocket and not self.websocket.closed:
                     await self.websocket.close()
-                self.state = ConnectionState.RECONNECTING
+                self._set_state(ConnectionState.RECONNECTING)
                 break
 
     async def _connection_watchdog(self):
@@ -281,7 +290,7 @@ class BinanceWebSocketClient:
 
     async def _connect(self) -> bool:
         """Establish WebSocket connection"""
-        self.state = ConnectionState.CONNECTING
+        self._set_state(ConnectionState.CONNECTING)
         url = self._build_stream_url()
 
         try:
@@ -297,7 +306,7 @@ class BinanceWebSocketClient:
                 timeout=10.0
             )
 
-            self.state = ConnectionState.CONNECTED
+            self._set_state(ConnectionState.CONNECTED)
             self.connection_time = self._now()
             self.last_message_time = self._now()
 
@@ -335,7 +344,7 @@ class BinanceWebSocketClient:
                 and failed_attempts >= self.max_reconnect_attempts
             ):
                 logger.error(f"Max reconnection attempts ({self.max_reconnect_attempts}) reached")
-                self.state = ConnectionState.DISCONNECTED
+                self._set_state(ConnectionState.DISCONNECTED)
                 return False
 
             # Wait before reconnecting
@@ -385,21 +394,24 @@ class BinanceWebSocketClient:
                 success = await self._connect()
                 if not success:
                     logger.error("Failed to establish connection")
-                    self.state = ConnectionState.RECONNECTING
+                    self._set_state(ConnectionState.RECONNECTING)
                     reconnect_success = await self._reconnect_loop()
                     if not reconnect_success:
                         if self.max_reconnect_attempts is not None:
                             break
                         continue
 
-            # Connection established, wait for disconnection
-            while self.state == ConnectionState.CONNECTED and not self._stop_event.is_set():
-                await asyncio.sleep(0.5)
+            # Connection established, wait for disconnection or shutdown
+            await asyncio.wait(
+                [asyncio.create_task(self._disconnected_event.wait()),
+                 asyncio.create_task(self._stop_event.wait())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
             # If we're here, connection was lost
             if not self._stop_event.is_set():
                 logger.warning("Connection lost, attempting to reconnect...")
-                self.state = ConnectionState.RECONNECTING
+                self._set_state(ConnectionState.RECONNECTING)
 
                 # Cancel old tasks
                 await self._cancel_runtime_tasks()
@@ -416,7 +428,7 @@ class BinanceWebSocketClient:
         """Stop WebSocket connection gracefully"""
         logger.info("Stopping WebSocket client...")
         self._stop_event.set()
-        self.state = ConnectionState.STOPPED
+        self._set_state(ConnectionState.STOPPED)
 
         await self._cleanup()
 

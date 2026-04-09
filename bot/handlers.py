@@ -8,7 +8,6 @@ from difflib import get_close_matches
 from telegram import InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from common.clients.defillama import DefiLlamaClient
 from common.logging import logger
 from common.stablecoin_universe import resolve_live_snapshots_for_cached_universe
 
@@ -113,11 +112,10 @@ async def all_prices_command(self, update: Update, context: ContextTypes.DEFAULT
 async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /stablecoins command."""
     try:
-        async with DefiLlamaClient() as client:
-            stablecoins = await resolve_live_snapshots_for_cached_universe(
-                client,
-                self.config.stablecoin_universe_cache_path,
-            )
+        stablecoins = await resolve_live_snapshots_for_cached_universe(
+            self._defillama_client,
+            self.config.stablecoin_universe_cache_path,
+        )
         message = render_stablecoin_prices_message(stablecoins, self._format_timestamp())
         await self._send_or_edit_message(update.effective_chat.id, message)
     except Exception as exc:

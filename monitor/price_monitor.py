@@ -422,7 +422,7 @@ class PriceMonitor:
             return None
 
         volume_multiplier = current_volume / avg_volume
-        volume_alert_multiplier = getattr(self.config, "volume_alert_multiplier", 10.0)
+        volume_alert_multiplier = self.config.volume_alert_multiplier
 
         if self.last_volume_alert_time:
             time_since_last = (current_time - self.last_volume_alert_time).total_seconds()

@@ -20,6 +20,7 @@ from tests.stubs import install_dependency_stubs
 install_dependency_stubs()
 
 import bot
+import common.runtime as common_runtime
 import monitor
 from common.clients.websocket import ConnectionState
 from common.config import CoinConfig, ConfigManager
@@ -1059,6 +1060,17 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
         )
         return StablecoinDepegMonitor(config=config, notifier=notifier, client=object())
 
+    def _evaluate_snapshot(self, monitor, snapshot):
+        """Synchronous evaluate_snapshot replacement using _build_alert_message."""
+        alert = monitor._build_alert_message(snapshot)
+        if alert is None:
+            return False
+        message, alert_time = alert
+        sent = monitor.notifier.send_message(message)
+        if sent:
+            monitor._mark_alert_sent(snapshot.symbol, alert_time)
+        return sent
+
     def test_stablecoin_monitor_does_not_alert_within_threshold(self) -> None:
         from common.clients.defillama import StablecoinSnapshot
 
@@ -1068,8 +1080,8 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
         within_upper = StablecoinSnapshot("USDX", "USDX", 1.049, 1000.0, 1)
         within_lower = StablecoinSnapshot("USDY", "USDY", 0.951, 900.0, 2)
 
-        self.assertFalse(stablecoin_monitor.evaluate_snapshot(within_upper))
-        self.assertFalse(stablecoin_monitor.evaluate_snapshot(within_lower))
+        self.assertFalse(self._evaluate_snapshot(stablecoin_monitor, within_upper))
+        self.assertFalse(self._evaluate_snapshot(stablecoin_monitor, within_lower))
         self.assertEqual(notifier.messages, [])
 
     def test_stablecoin_monitor_alerts_when_price_exceeds_upper_threshold(self) -> None:
@@ -1080,7 +1092,7 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
 
         snapshot = StablecoinSnapshot("USDX", "USDX", 1.051, 1000.0, 1)
 
-        self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+        self.assertTrue(self._evaluate_snapshot(stablecoin_monitor, snapshot))
         self.assertEqual(len(notifier.messages), 1)
         self.assertIn("USDX", notifier.messages[0])
         self.assertIn("+5.10%", notifier.messages[0])
@@ -1093,7 +1105,7 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
 
         snapshot = StablecoinSnapshot("USDX", "USDX", 0.949, 1000.0, 1)
 
-        self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+        self.assertTrue(self._evaluate_snapshot(stablecoin_monitor, snapshot))
         self.assertEqual(len(notifier.messages), 1)
         self.assertIn("-5.10%", notifier.messages[0])
 
@@ -1105,7 +1117,7 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
 
         snapshot = StablecoinSnapshot("USD <One> & Co", "USD<T>", 1.051, 1000.0, 1)
 
-        self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+        self.assertTrue(self._evaluate_snapshot(stablecoin_monitor, snapshot))
         self.assertEqual(len(notifier.messages), 1)
         self.assertIn("USD &lt;One&gt; &amp; Co", notifier.messages[0])
         self.assertIn("USD&lt;T&gt;", notifier.messages[0])
@@ -1122,9 +1134,9 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
         snapshot = StablecoinSnapshot("USDX", "USDX", 0.949, 1000.0, 1)
 
         with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now):
-            self.assertTrue(stablecoin_monitor.evaluate_snapshot(snapshot))
+            self.assertTrue(self._evaluate_snapshot(stablecoin_monitor, snapshot))
             clock.current = start_time + timedelta(seconds=60)
-            self.assertFalse(stablecoin_monitor.evaluate_snapshot(snapshot))
+            self.assertFalse(self._evaluate_snapshot(stablecoin_monitor, snapshot))
 
         self.assertEqual(len(notifier.messages), 1)
 
@@ -1139,11 +1151,11 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
         recovered = StablecoinSnapshot("USDX", "USDX", 1.0, 1000.0, 1)
 
         with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now):
-            self.assertTrue(stablecoin_monitor.evaluate_snapshot(depegged))
+            self.assertTrue(self._evaluate_snapshot(stablecoin_monitor, depegged))
             clock.current = start_time + timedelta(seconds=60)
-            self.assertFalse(stablecoin_monitor.evaluate_snapshot(recovered))
+            self.assertFalse(self._evaluate_snapshot(stablecoin_monitor, recovered))
             clock.current = start_time + timedelta(seconds=120)
-            self.assertTrue(stablecoin_monitor.evaluate_snapshot(depegged))
+            self.assertTrue(self._evaluate_snapshot(stablecoin_monitor, depegged))
 
         self.assertEqual(len(notifier.messages), 2)
 
@@ -1824,7 +1836,7 @@ class TelegramBotRegressionTests(unittest.TestCase):
             coro.close()
             return heartbeat_task
 
-        with patch.object(bot.signal, "signal") as mock_signal, \
+        with patch.object(common_runtime.signal, "signal") as mock_signal, \
              patch("bot.app.AsyncBinancePriceFetcher", return_value=fetcher_context), \
              patch("bot.app.asyncio.create_task", side_effect=fake_create_task):
             mock_signal.side_effect = [original_sigint, original_sigterm, None, None]
@@ -1852,10 +1864,10 @@ class TelegramBotRegressionTests(unittest.TestCase):
         self.assertEqual(
             mock_signal.call_args_list,
             [
-                unittest.mock.call(bot.signal.SIGINT, telegram_bot._signal_handler),
-                unittest.mock.call(bot.signal.SIGTERM, telegram_bot._signal_handler),
-                unittest.mock.call(bot.signal.SIGINT, original_sigint),
-                unittest.mock.call(bot.signal.SIGTERM, original_sigterm),
+                unittest.mock.call(common_runtime.signal.SIGINT, telegram_bot._on_signal),
+                unittest.mock.call(common_runtime.signal.SIGTERM, telegram_bot._on_signal),
+                unittest.mock.call(common_runtime.signal.SIGINT, original_sigint),
+                unittest.mock.call(common_runtime.signal.SIGTERM, original_sigterm),
             ],
         )
 
@@ -1886,7 +1898,7 @@ class TelegramBotRegressionTests(unittest.TestCase):
             coro.close()
             return heartbeat_task
 
-        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler), \
+        with patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler), \
              patch("bot.app.AsyncBinancePriceFetcher", return_value=fetcher_context), \
              patch("bot.app.Update.ALL_TYPES", new=allowed_updates), \
              patch("bot.app.asyncio.create_task", side_effect=fake_create_task):
@@ -1920,7 +1932,7 @@ class TelegramBotRegressionTests(unittest.TestCase):
             get_enabled_coins=lambda: [],
         )
 
-        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler):
+        with patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler):
             telegram_bot = bot.TelegramBot(config)
 
         enabled_coins = [
@@ -1949,7 +1961,7 @@ class TelegramBotRegressionTests(unittest.TestCase):
             get_enabled_coins=lambda: [],
         )
 
-        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler):
+        with patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler):
             telegram_bot = bot.TelegramBot(config)
 
         telegram_bot.send_price_update = AsyncMock()
@@ -1978,7 +1990,7 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
             get_enabled_coins=lambda: [],
         )
 
-        with patch.object(bot.signal, "signal", side_effect=lambda signum, handler: handler):
+        with patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler):
             return bot.TelegramBot(config)
 
     @staticmethod
@@ -2013,9 +2025,9 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
     def test_stablecoins_command_returns_formatted_top_25_list(self) -> None:
         telegram_bot = self._build_bot()
         telegram_bot._send_or_edit_message = AsyncMock()
+        telegram_bot._defillama_client = FakeStablecoinClient(snapshots=self._build_snapshots())
         update = self._build_update()
         context = self._build_context()
-        stablecoin_client = FakeStablecoinClient(snapshots=self._build_snapshots())
 
         self.assertTrue(
             hasattr(telegram_bot, "stablecoins_command"),
@@ -2025,14 +2037,12 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
         resolver = AsyncMock(return_value=self._build_snapshots()[:25])
 
         with (
-            patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True),
             patch("bot.handlers.resolve_live_snapshots_for_cached_universe", new=resolver),
         ):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
-        self.assertEqual(stablecoin_client.calls, [])
         resolver.assert_awaited_once_with(
-            stablecoin_client,
+            telegram_bot._defillama_client,
             telegram_bot.config.stablecoin_universe_cache_path,
         )
         telegram_bot._send_or_edit_message.assert_awaited_once()
@@ -2052,9 +2062,9 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
     def test_stablecoins_command_returns_error_message_when_fetch_fails(self) -> None:
         telegram_bot = self._build_bot()
         telegram_bot._send_or_edit_message = AsyncMock()
+        telegram_bot._defillama_client = FakeStablecoinClient(error=RuntimeError("boom"))
         update = self._build_update()
         context = self._build_context()
-        stablecoin_client = FakeStablecoinClient(error=RuntimeError("boom"))
 
         self.assertTrue(
             hasattr(telegram_bot, "stablecoins_command"),
@@ -2064,14 +2074,12 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
         resolver = AsyncMock(side_effect=ValueError("missing cache"))
 
         with (
-            patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True),
             patch("bot.handlers.resolve_live_snapshots_for_cached_universe", new=resolver),
         ):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
-        self.assertEqual(stablecoin_client.calls, [])
         resolver.assert_awaited_once_with(
-            stablecoin_client,
+            telegram_bot._defillama_client,
             telegram_bot.config.stablecoin_universe_cache_path,
         )
         telegram_bot._send_or_edit_message.assert_awaited_once()
@@ -2091,6 +2099,7 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
                 StablecoinSnapshot("USD <One> & Co", "USD<T>", 0.9987, 150_000_000_000.0, 1),
             ]
         )
+        telegram_bot._defillama_client = stablecoin_client
 
         resolver = AsyncMock(
             return_value=[
@@ -2099,12 +2108,10 @@ class TelegramBotStablecoinCommandRegressionTests(unittest.TestCase):
         )
 
         with (
-            patch("bot.handlers.DefiLlamaClient", return_value=stablecoin_client, create=True),
             patch("bot.handlers.resolve_live_snapshots_for_cached_universe", new=resolver),
         ):
             asyncio.run(telegram_bot.stablecoins_command(update, context))
 
-        self.assertEqual(stablecoin_client.calls, [])
         resolver.assert_awaited_once_with(
             stablecoin_client,
             telegram_bot.config.stablecoin_universe_cache_path,

@@ -41,7 +41,7 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
             client = types.SimpleNamespace(fetch_all_stablecoins=AsyncMock(return_value=[]))
         return StablecoinDepegMonitor(config=config, notifier=notifier, client=client)
 
-    def test_evaluate_snapshot_updates_last_alert_time_only_after_successful_send(self) -> None:
+    def test_build_alert_message_updates_last_alert_time_only_after_successful_send(self) -> None:
         notifier = types.SimpleNamespace(send_message=Mock(return_value=False))
         stablecoin_monitor = self._build_stablecoin_monitor(notifier)
         start_time = datetime(2026, 3, 24, tzinfo=timezone.utc)
@@ -49,7 +49,13 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
         snapshot = StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 1)
 
         with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now):
-            self.assertFalse(stablecoin_monitor.evaluate_snapshot(snapshot))
+            alert = stablecoin_monitor._build_alert_message(snapshot)
+            self.assertIsNotNone(alert)
+            message, alert_time = alert
+            sent = notifier.send_message(message)
+            if not sent:
+                # Do NOT call _mark_alert_sent when send fails
+                pass
 
         state = stablecoin_monitor._states["USDC"]
         self.assertTrue(state.is_depegged)

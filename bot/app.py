@@ -5,24 +5,24 @@ Telegram bot application lifecycle and shared helpers.
 import asyncio
 import math
 import os
-import signal
 from datetime import datetime
 from pathlib import Path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
+from common.clients.defillama import DefiLlamaClient
 from common.clients.http import AsyncBinancePriceFetcher
 from common.config import CoinConfig, ConfigManager
 from common.logging import logger
 from common.notifications import TelegramNotifier
-from common.runtime import SignalHandlerRegistry
+from common.runtime import SignalHandlerRegistry, SignalHandlingMixin
 from common.utils import format_threshold, now_in_configured_timezone
 
 from . import handlers, messages
 
 
-class TelegramBot:
+class TelegramBot(SignalHandlingMixin):
     """Telegram Interactive Bot with shared common module."""
 
     BOT_CONNECTION_POOL_SIZE = 8
@@ -37,6 +37,7 @@ class TelegramBot:
             raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 
         self.fetcher: AsyncBinancePriceFetcher | None = None
+        self._defillama_client: DefiLlamaClient | None = None
         self.notifier = TelegramNotifier(
             bot_token=self.config.telegram_bot_token,
             chat_id=self.config.telegram_chat_id,
@@ -62,8 +63,6 @@ class TelegramBot:
 
         self._shutdown_event = asyncio.Event()
         self._signal_registry = SignalHandlerRegistry()
-        self._original_sigint = None
-        self._original_sigterm = None
         self._signal_handlers_registered = False
 
         self.start_time: datetime | None = None
@@ -125,40 +124,6 @@ class TelegramBot:
         if minutes > 0:
             return f"{minutes}m {seconds}s"
         return f"{seconds}s"
-
-    def _setup_signal_handlers(self):
-        """Setup signal handlers for graceful shutdown."""
-        if self._signal_handlers_registered:
-            return
-        self._signal_registry.setup(self._signal_handler)
-        self._original_sigint = self._signal_registry._original_sigint
-        self._original_sigterm = self._signal_registry._original_sigterm
-        self._signal_handlers_registered = True
-        logger.debug("Signal handlers registered (bot)")
-
-    def _signal_handler(self, signum: int, frame) -> None:
-        """Handle shutdown signals (SIGINT, SIGTERM)."""
-        sig_name = signal.Signals(signum).name
-        logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
-
-        original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
-        if original_handler is not None:
-            self._restore_signal_handler(signum, original_handler)
-        self._shutdown_event.set()
-
-    @staticmethod
-    def _restore_signal_handler(signum: int, original_handler) -> None:
-        """Restore original signal handler, handling cross-platform differences."""
-        SignalHandlerRegistry._restore_signal(signum, original_handler)
-
-    def _restore_signal_handlers(self) -> None:
-        """Restore original signal handlers on bot exit."""
-        if not self._signal_handlers_registered:
-            return
-        self._signal_registry.restore()
-        self._original_sigint = None
-        self._original_sigterm = None
-        self._signal_handlers_registered = False
 
     @staticmethod
     def _chunk_buttons(
@@ -274,6 +239,8 @@ class TelegramBot:
             self.start_time = now_in_configured_timezone()
             heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
+            self._defillama_client = DefiLlamaClient()
+
             async with AsyncBinancePriceFetcher() as fetcher:
                 self.fetcher = fetcher
                 await self.application.initialize()
@@ -305,6 +272,9 @@ class TelegramBot:
                     await self.application.shutdown()
             finally:
                 self._restore_signal_handlers()
+                if self._defillama_client is not None:
+                    await self._defillama_client.close()
+                    self._defillama_client = None
                 self.notifier.close()
 
     def run(self):

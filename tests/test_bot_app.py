@@ -1,4 +1,5 @@
 import asyncio
+import signal
 import types
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,7 @@ from tests.stubs import install_dependency_stubs
 install_dependency_stubs()
 
 import bot.app as bot_app
+import common.runtime as common_runtime
 
 
 class FakeCommandHandler:
@@ -97,7 +99,7 @@ class TelegramBotAppTests(unittest.TestCase):
         with patch.object(bot_app, "Application", FakeApplicationModule), \
              patch.object(bot_app, "CommandHandler", FakeCommandHandler), \
              patch.object(bot_app, "CallbackQueryHandler", FakeCallbackQueryHandler), \
-             patch.object(bot_app.signal, "signal", side_effect=lambda signum, handler: handler):
+             patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler):
             telegram_bot = bot_app.TelegramBot(config)
 
         return telegram_bot, application
@@ -141,7 +143,7 @@ class TelegramBotAppTests(unittest.TestCase):
              patch.object(bot_app, "now_in_configured_timezone", return_value=types.SimpleNamespace(strftime=lambda _fmt: "2026-03-25 10:30:45")), \
              patch.object(bot_app.TelegramBot, "_touch_heartbeat", return_value=None), \
              patch.object(bot_app.TelegramBot, "_heartbeat_loop", side_effect=fake_heartbeat_loop), \
-             patch.object(bot_app.signal, "signal") as mock_signal:
+             patch.object(common_runtime.signal, "signal") as mock_signal:
             mock_signal.side_effect = [original_sigint, original_sigterm, None, None]
             telegram_bot = bot_app.TelegramBot(config)
             self.assertEqual(mock_signal.call_args_list, [])
@@ -156,10 +158,10 @@ class TelegramBotAppTests(unittest.TestCase):
         self.assertEqual(
             mock_signal.call_args_list,
             [
-                unittest.mock.call(bot_app.signal.SIGINT, telegram_bot._signal_handler),
-                unittest.mock.call(bot_app.signal.SIGTERM, telegram_bot._signal_handler),
-                unittest.mock.call(bot_app.signal.SIGINT, original_sigint),
-                unittest.mock.call(bot_app.signal.SIGTERM, original_sigterm),
+                unittest.mock.call(common_runtime.signal.SIGINT, telegram_bot._on_signal),
+                unittest.mock.call(common_runtime.signal.SIGTERM, telegram_bot._on_signal),
+                unittest.mock.call(common_runtime.signal.SIGINT, original_sigint),
+                unittest.mock.call(common_runtime.signal.SIGTERM, original_sigterm),
             ],
         )
 
@@ -231,7 +233,7 @@ class TelegramBotAppTests(unittest.TestCase):
              patch.object(bot_app, "now_in_configured_timezone", return_value=types.SimpleNamespace(strftime=lambda _fmt: "2026-03-25 10:30:45")), \
              patch.object(bot_app.TelegramBot, "_touch_heartbeat", return_value=None), \
              patch.object(bot_app.TelegramBot, "_heartbeat_loop", side_effect=fake_heartbeat_loop), \
-             patch.object(bot_app.signal, "signal", side_effect=lambda signum, handler: handler):
+             patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler):
             telegram_bot = bot_app.TelegramBot(config)
 
             loop = asyncio.new_event_loop()
@@ -294,7 +296,7 @@ class TelegramBotAppTests(unittest.TestCase):
              patch.object(bot_app, "CommandHandler", FakeCommandHandler), \
              patch.object(bot_app, "CallbackQueryHandler", FakeCallbackQueryHandler), \
              patch.object(bot_app, "TelegramNotifier") as mock_notifier_cls, \
-             patch.object(bot_app.signal, "signal", side_effect=lambda signum, handler: handler):
+             patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler):
             telegram_bot = bot_app.TelegramBot(config)
 
         mock_notifier_cls.assert_called_once_with(bot_token="token", chat_id="chat-from-config")

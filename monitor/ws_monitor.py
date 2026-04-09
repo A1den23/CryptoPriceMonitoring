@@ -3,7 +3,6 @@ WebSocket monitor orchestration and runtime lifecycle management.
 """
 
 import asyncio
-import signal
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +11,7 @@ from common.clients.websocket import BinanceWebSocketClient
 from common.config import ConfigManager
 from common.logging import logger
 from common.notifications import TelegramNotifier
-from common.runtime import SignalHandlerRegistry
+from common.runtime import SignalHandlerRegistry, SignalHandlingMixin
 from common.stablecoin_universe import (
     compute_next_stablecoin_universe_refresh_time,
     refresh_stablecoin_universe_from_config,
@@ -29,7 +28,7 @@ from .runtime_messages import (
 from .stablecoin_depeg_monitor import StablecoinDepegMonitor
 
 
-class WebSocketMultiCoinMonitor:
+class WebSocketMultiCoinMonitor(SignalHandlingMixin):
     """
     Real-time multi-cryptocurrency monitor using WebSocket.
 
@@ -59,8 +58,6 @@ class WebSocketMultiCoinMonitor:
 
         self._shutdown_event = asyncio.Event()
         self._signal_registry = SignalHandlerRegistry()
-        self._original_sigint = None
-        self._original_sigterm = None
         self._signal_handlers_registered = False
         self._disconnect_alert_time: datetime | None = None
         self._last_disconnect_reason: str | None = None
@@ -86,40 +83,6 @@ class WebSocketMultiCoinMonitor:
         if not self.monitors:
             logger.warning("No coins are enabled in configuration")
 
-    def _setup_signal_handlers(self):
-        """Setup signal handlers for graceful shutdown."""
-        if self._signal_handlers_registered:
-            return
-        self._signal_registry.setup(self._signal_handler)
-        self._original_sigint = self._signal_registry._original_sigint
-        self._original_sigterm = self._signal_registry._original_sigterm
-        self._signal_handlers_registered = True
-        logger.debug("Signal handlers registered for SIGINT and SIGTERM")
-
-    def _signal_handler(self, signum: int, frame) -> None:
-        """Handle shutdown signals (SIGINT, SIGTERM)."""
-        sig_name = signal.Signals(signum).name
-        logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
-
-        original_handler = self._original_sigint if signum == signal.SIGINT else self._original_sigterm
-        if original_handler is not None:
-            self._restore_signal_handler(signum, original_handler)
-        self._shutdown_event.set()
-
-    @staticmethod
-    def _restore_signal_handler(signum: int, original_handler) -> None:
-        """Restore original signal handler, handling cross-platform differences."""
-        SignalHandlerRegistry._restore_signal(signum, original_handler)
-
-    def _restore_signal_handlers(self) -> None:
-        """Restore original signal handlers on monitor exit."""
-        if not self._signal_handlers_registered:
-            return
-        self._signal_registry.restore()
-        self._original_sigint = None
-        self._original_sigterm = None
-        self._signal_handlers_registered = False
-
     async def _send_shutdown_notification(self) -> None:
         """Send shutdown notification via Telegram."""
         now = now_in_configured_timezone()
@@ -138,7 +101,7 @@ class WebSocketMultiCoinMonitor:
             monitor_count=len(self.monitors),
         )
         try:
-            self.notifier.send_message(message)
+            await asyncio.to_thread(self.notifier.send_message, message)
         except Exception as e:
             logger.error(f"Failed to send shutdown notification: {e}")
 
@@ -316,8 +279,8 @@ class WebSocketMultiCoinMonitor:
             now = now_in_configured_timezone()
             next_refresh = compute_next_stablecoin_universe_refresh_time(
                 now,
-                refresh_hour=getattr(self.config, "stablecoin_universe_refresh_hour", 2),
-                refresh_minute=getattr(self.config, "stablecoin_universe_refresh_minute", 0),
+                refresh_hour=self.config.stablecoin_universe_refresh_hour,
+                refresh_minute=self.config.stablecoin_universe_refresh_minute,
             )
             delay_seconds = max(0.0, (next_refresh - now).total_seconds())
             logger.info(
@@ -383,11 +346,7 @@ class WebSocketMultiCoinMonitor:
                 max_reconnect_attempts=None,
             )
 
-            auto_refresh_enabled = getattr(
-                self.config,
-                "stablecoin_universe_auto_refresh_enabled",
-                True,
-            )
+            auto_refresh_enabled = self.config.stablecoin_universe_auto_refresh_enabled
             should_enable_stablecoin_client = (
                 self.config.stablecoin_depeg_monitor_enabled
                 or auto_refresh_enabled
@@ -475,7 +434,7 @@ class WebSocketMultiCoinMonitor:
             should_notify_shutdown = False
             if self.ws_client:
                 await self.ws_client.stop()
-            self.notifier.send_message("👋 加密货币价格监控已停止")
+            await asyncio.to_thread(self.notifier.send_message, "👋 加密货币价格监控已停止")
         except asyncio.CancelledError as exc:
             cancellation_error = exc
             logger.info("WebSocket monitor cancelled by supervisor, performing graceful cleanup...")
@@ -485,16 +444,6 @@ class WebSocketMultiCoinMonitor:
         finally:
             try:
                 if should_cleanup:
-                    for task in tasks:
-                        if task is not None:
-                            task.cancel()
-                    for task in tasks:
-                        if task is not None:
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                pass
-
                     if self.ws_client:
                         await self.ws_client.stop()
 

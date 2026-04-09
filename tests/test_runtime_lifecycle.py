@@ -479,7 +479,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 return refresh_task
             return shutdown_task
 
-        with patch("monitor.ws_monitor.signal.signal") as mock_signal, \
+        with patch("common.runtime.signal.signal") as mock_signal, \
              patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
@@ -491,8 +491,8 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
             ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
             self.assertEqual(mock_signal.call_args_list, [])
-            self.assertIsNone(ws_monitor._original_sigint)
-            self.assertIsNone(ws_monitor._original_sigterm)
+            self.assertIsNone(ws_monitor._signal_registry._original_sigint)
+            self.assertIsNone(ws_monitor._signal_registry._original_sigterm)
             self.assertFalse(ws_monitor._signal_handlers_registered)
             ws_monitor._shutdown_event.set()
 
@@ -501,8 +501,8 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             mock_signal.call_args_list,
             [
-                unittest.mock.call(signal.SIGINT, ws_monitor._signal_handler),
-                unittest.mock.call(signal.SIGTERM, ws_monitor._signal_handler),
+                unittest.mock.call(signal.SIGINT, ws_monitor._on_signal),
+                unittest.mock.call(signal.SIGTERM, ws_monitor._on_signal),
                 unittest.mock.call(signal.SIGINT, original_sigint),
                 unittest.mock.call(signal.SIGTERM, original_sigterm),
             ],

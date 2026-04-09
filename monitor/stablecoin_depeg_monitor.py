@@ -79,16 +79,6 @@ class StablecoinDepegMonitor:
         state.is_depegged = True
         state.last_alert_time = alert_time
 
-    def evaluate_snapshot(self, snapshot: StablecoinSnapshot) -> bool:
-        alert = self._build_alert_message(snapshot)
-        if alert is None:
-            return False
-        message, alert_time = alert
-        sent = self.notifier.send_message(message)
-        if sent:
-            self._mark_alert_sent(snapshot.symbol, alert_time)
-        return sent
-
     async def _send_alert(self, message: str) -> bool:
         return await asyncio.to_thread(self.notifier.send_message, message)
 
