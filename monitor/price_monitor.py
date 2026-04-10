@@ -180,9 +180,14 @@ class PriceMonitor:
         coin = get_coin_display_name(self.config.symbol)
         previous_price = self.last_price
         is_up = previous_price is None or current_price > previous_price
-        direction = "📈" if is_up else "📉"
+        _direction = "📈" if is_up else "📉"
 
         now = now_in_configured_timezone()
+
+        # Set cooldown immediately to prevent duplicate notifications from
+        # rapid WebSocket updates arriving before the async send completes.
+        self.last_price = current_price
+        self.last_milestone_notification_time = now
 
         message = render_milestone_alert(
             symbol=self.config.symbol,
@@ -191,13 +196,11 @@ class PriceMonitor:
             current_time=now,
         )
 
-        def _mark_sent() -> None:
-            self.last_price = current_price
-            self.last_milestone_notification_time = now
+        def _log_sent() -> None:
             milestone_str = format_threshold(current_milestone)
             logger.info(f"[{coin}] Milestone crossed: {milestone_str}")
 
-        self._send_notification(message, on_success=_mark_sent)
+        self._send_notification(message, on_success=_log_sent)
 
     def check_integer_milestone(self, current_price: float) -> bool:
         """Check if price reached an integer milestone using crossing detection."""
@@ -358,11 +361,13 @@ class PriceMonitor:
             .replace("加速度", "acceleration")
         )
 
-        def _mark_sent() -> None:
-            logger.info(f"[{coin}] High volatility detected - {log_reasons}")
-            self.last_volatility_notification_time = current_time
+        # Set cooldown immediately to prevent duplicate notifications.
+        self.last_volatility_notification_time = current_time
 
-        self._send_notification(message, on_success=_mark_sent)
+        def _log_sent() -> None:
+            logger.info(f"[{coin}] High volatility detected - {log_reasons}")
+
+        self._send_notification(message, on_success=_log_sent)
 
     def check_volatility(self, current_price: float) -> str | None:
         """Check price history for volatility thresholds."""
@@ -444,14 +449,16 @@ class PriceMonitor:
                 current_time=current_time,
             )
 
-            def _mark_sent() -> None:
+            # Set cooldown immediately to prevent duplicate notifications.
+            self.last_volume_alert_time = current_time
+
+            def _log_sent() -> None:
                 logger.info(
                     f"[{coin}] Volume anomaly detected: {volume_multiplier:.1f}x "
                     f"(current:{current_volume:,.0f}, avg:{avg_volume:,.0f})"
                 )
-                self.last_volume_alert_time = current_time
 
-            self._send_notification(message, on_success=_mark_sent)
+            self._send_notification(message, on_success=_log_sent)
             return f"V:{volume_multiplier:.1f}x🚨"
 
         return f"V:{volume_multiplier:.1f}x"
