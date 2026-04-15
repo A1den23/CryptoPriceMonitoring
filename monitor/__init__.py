@@ -128,7 +128,7 @@ def test_volatility_alert():
                         notifier.send_message(message)
                         print("  ✓ 测试告警已发送!\n")
                 except Exception as e:
-                    logger.error(f"Error while testing {coin_config.coin_name}: {e}")
+                    logger.error(f"测试 {coin_config.coin_name} 时出错: {e}")
 
         print("测试完成! 请检查 Telegram 中的测试告警。\n")
     finally:
@@ -168,7 +168,7 @@ def show_status():
                     print(f"   波动告警: {coin_config.volatility_percent}% / {coin_config.volatility_window}秒")
                     print()
             except Exception as e:
-                logger.error(f"Error getting status for {coin_config.coin_name}: {e}")
+                logger.error(f"获取 {coin_config.coin_name} 状态时出错: {e}")
 
     print("=" * 60 + "\n")
 
@@ -202,4 +202,4 @@ def main():
         ws_monitor = WebSocketMultiCoinMonitor(config)
         asyncio.run(ws_monitor.run())
     except KeyboardInterrupt:
-        logger.info("\nGraceful shutdown in progress...")
+        logger.info("\n优雅停机进行中...")

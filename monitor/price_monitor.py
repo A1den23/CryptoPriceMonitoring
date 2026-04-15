@@ -119,17 +119,17 @@ class PriceMonitor:
         epsilon = max(threshold * 1e-9, 1e-12)
         return math.floor((price + epsilon) / threshold) * threshold
 
-    def _is_in_milestone_cooldown(self, coin: str) -> bool:
+    def _is_in_milestone_cooldown(self, coin: str, _now: datetime | None = None) -> bool:
         """Check if milestone notification is in cooldown period."""
         if not self.last_milestone_notification_time:
             return False
 
-        now = now_in_configured_timezone()
+        now = _now or now_in_configured_timezone()
         time_since_last = (now - self.last_milestone_notification_time).total_seconds()
         if time_since_last >= self.milestone_cooldown_seconds:
             return False
 
-        logger.debug(f"[{coin}] Global cooldown active ({time_since_last:.0f}s ago)")
+        logger.debug(f"[{coin}] 全局冷却中 (已过 {time_since_last:.0f}s)")
         return True
 
     def _on_notification_done(self, task: asyncio.Task[bool]) -> None:
@@ -140,11 +140,11 @@ class PriceMonitor:
         try:
             sent = task.result()
         except Exception:
-            logger.exception(f"[{self.config.symbol}] Failed to send Telegram notification")
+            logger.exception(f"[{self.config.symbol}] Telegram 通知发送失败")
             return
 
         if not sent:
-            logger.error(f"[{self.config.symbol}] Telegram notification send returned false")
+            logger.error(f"[{self.config.symbol}] Telegram 通知发送返回 false")
 
     async def flush_notification_tasks(self) -> None:
         """Wait for any queued notification tasks to finish."""
@@ -198,11 +198,11 @@ class PriceMonitor:
 
         def _log_sent() -> None:
             milestone_str = format_threshold(current_milestone)
-            logger.info(f"[{coin}] Milestone crossed: {milestone_str}")
+            logger.info(f"[{coin}] 里程碑突破: {milestone_str}")
 
         self._send_notification(message, on_success=_log_sent)
 
-    def check_integer_milestone(self, current_price: float) -> bool:
+    def check_integer_milestone(self, current_price: float, _now: datetime | None = None) -> bool:
         """Check if price reached an integer milestone using crossing detection."""
         threshold = self.config.integer_threshold
         coin = get_coin_display_name(self.config.symbol)
@@ -220,7 +220,7 @@ class PriceMonitor:
             return False
 
         if last_milestone != current_milestone:
-            if self._is_in_milestone_cooldown(coin):
+            if self._is_in_milestone_cooldown(coin, _now=_now):
                 self.last_price = current_price
                 return False
 
@@ -230,7 +230,7 @@ class PriceMonitor:
         self.last_price = current_price
         return False
 
-    def _append_price_sample(self, current_price: float, current_time: datetime) -> None:
+    def _append_price_sample(self, current_price: float, current_time: datetime) -> None:  # noqa: E501 — keep param name explicit
         """Add or refresh the most recent representative price sample."""
         if self.price_history:
             elapsed_seconds = (current_time - self.price_history[-1].timestamp).total_seconds()
@@ -240,9 +240,9 @@ class PriceMonitor:
 
         self.price_history.append(PriceData(current_price, current_time))
 
-    def _update_price_history(self, current_price: float) -> list[float]:
+    def _update_price_history(self, current_price: float, _now: datetime | None = None) -> list[float]:
         """Update price history and return rolling window prices."""
-        current_time = now_in_configured_timezone()
+        current_time = _now or now_in_configured_timezone()
         self._append_price_sample(current_price, current_time)
 
         cutoff_time = current_time - timedelta(seconds=self.config.volatility_window)
@@ -330,11 +330,12 @@ class PriceMonitor:
 
         return is_volatile, reasons
 
-    def _is_in_volatility_cooldown(self, current_time: datetime) -> bool:
+    def _is_in_volatility_cooldown(self, current_time: datetime | None = None) -> bool:
         """Check if volatility notification is in cooldown period."""
+        _time = current_time or now_in_configured_timezone()
         if not self.last_volatility_notification_time:
             return False
-        time_since_last = (current_time - self.last_volatility_notification_time).total_seconds()
+        time_since_last = (_time - self.last_volatility_notification_time).total_seconds()
         return time_since_last < self.volatility_cooldown_seconds
 
     def _send_volatility_alert(self, current_price: float, reasons: list[str]) -> None:
@@ -365,13 +366,14 @@ class PriceMonitor:
         self.last_volatility_notification_time = current_time
 
         def _log_sent() -> None:
-            logger.info(f"[{coin}] High volatility detected - {log_reasons}")
+            logger.info(f"[{coin}] 检测到高波动 - {log_reasons}")
 
         self._send_notification(message, on_success=_log_sent)
 
-    def check_volatility(self, current_price: float) -> str | None:
+    def check_volatility(self, current_price: float, _now: datetime | None = None) -> str | None:
         """Check price history for volatility thresholds."""
-        prices = self._update_price_history(current_price)
+        now = _now or now_in_configured_timezone()
+        prices = self._update_price_history(current_price, _now=now)
 
         if len(prices) < 3:
             return None
@@ -386,7 +388,7 @@ class PriceMonitor:
         threshold = self.config.volatility_percent
         is_volatile, reasons = self._evaluate_volatility_thresholds(metrics, threshold)
 
-        if self._is_in_volatility_cooldown(now_in_configured_timezone()):
+        if self._is_in_volatility_cooldown(now):
             return volatility_info
 
         if is_volatile:
@@ -398,7 +400,7 @@ class PriceMonitor:
         """Check for sudden spikes in trading volume."""
         if volume <= 0 or current_price <= 0:
             logger.warning(
-                f"[{self.config.symbol}] Invalid volume data: price={current_price}, volume={volume}"
+                f"[{self.config.symbol}] 成交量数据无效: price={current_price}, volume={volume}"
             )
             return None
 
@@ -454,8 +456,8 @@ class PriceMonitor:
 
             def _log_sent() -> None:
                 logger.info(
-                    f"[{coin}] Volume anomaly detected: {volume_multiplier:.1f}x "
-                    f"(current:{current_volume:,.0f}, avg:{avg_volume:,.0f})"
+                    f"[{coin}] 成交量异常: {volume_multiplier:.1f}x "
+                    f"(当前:{current_volume:,.0f}, 均值:{avg_volume:,.0f})"
                 )
 
             self._send_notification(message, on_success=_log_sent)
@@ -472,9 +474,10 @@ class PriceMonitor:
             min_change = min(base_min_change, self.config.integer_threshold)
             should_emit_output = price_diff >= min_change
 
+        now = now_in_configured_timezone()
         coin = get_coin_display_name(self.config.symbol)
-        milestone_alert = self.check_integer_milestone(current_price)
-        volatility_info = self.check_volatility(current_price)
+        milestone_alert = self.check_integer_milestone(current_price, _now=now)
+        volatility_info = self.check_volatility(current_price, _now=now)
 
         if not should_emit_output:
             return None

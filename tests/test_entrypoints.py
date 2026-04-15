@@ -50,7 +50,6 @@ class EntrypointImportContractTests(unittest.TestCase):
                 "load_environment",
                 "setup_logging",
                 "logger",
-                "get_logger",
                 "BinancePriceFetcher",
                 "AsyncBinancePriceFetcher",
                 "BinanceAPIError",
@@ -85,7 +84,6 @@ class EntrypointImportContractTests(unittest.TestCase):
         self.assertIs(common.load_environment, config.load_environment)
         self.assertIs(common.setup_logging, logging_utils.setup_logging)
         self.assertIs(common.logger, logging_utils.logger)
-        self.assertIs(common.get_logger, logging_utils.get_logger)
         self.assertIs(common.BinancePriceFetcher, clients_http.BinancePriceFetcher)
         self.assertIs(common.AsyncBinancePriceFetcher, clients_http.AsyncBinancePriceFetcher)
         self.assertIs(common.BinanceAPIError, clients_http.BinanceAPIError)
@@ -385,6 +383,7 @@ class EntrypointImportContractTests(unittest.TestCase):
         deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text()
         dockerfile = (REPO_ROOT / "Dockerfile").read_text()
         compose = (REPO_ROOT / "docker-compose.yml").read_text()
+        healthcheck_script = (REPO_ROOT / "scripts" / "healthcheck.py").read_text()
 
         self.assertIn(PRIMARY_MONITOR_ENTRYPOINT, readme)
         self.assertIn(PRIMARY_BOT_ENTRYPOINT, readme)
@@ -393,8 +392,8 @@ class EntrypointImportContractTests(unittest.TestCase):
         self.assertIn('CMD ["python", "-m", "common.startup", "python", "-m", "monitor"]', dockerfile)
         self.assertIn('["python", "-m", "common.startup", "python", "-m", "monitor"]', compose)
         self.assertIn('["python", "-m", "common.startup", "python", "-m", "bot"]', compose)
-        self.assertIn("b'-m monitor'", dockerfile)
-        self.assertIn("b'-m bot'", dockerfile)
+        self.assertIn('b"-m monitor"', healthcheck_script)
+        self.assertIn('b"-m bot"', healthcheck_script)
         self.assertNotIn("CMD [\"python\", \"monitor.py\"]", dockerfile)
         self.assertNotIn('["python", "monitor.py"]', compose)
         self.assertNotIn('["python", "bot.py"]', compose)

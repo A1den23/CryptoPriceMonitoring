@@ -69,7 +69,7 @@ class TelegramBot(SignalHandlingMixin):
         self._heartbeat_file = Path(self.config.bot_heartbeat_file)
         self._heartbeat_interval = self.config.bot_heartbeat_interval_seconds
 
-        logger.info("Telegram Bot initialized successfully")
+        logger.info("Telegram Bot 初始化成功")
 
     def _touch_heartbeat(self) -> None:
         """Touch heartbeat file to indicate bot event loop is alive."""
@@ -77,7 +77,7 @@ class TelegramBot(SignalHandlingMixin):
             self._heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
             self._heartbeat_file.touch()
         except OSError as e:
-            logger.warning(f"Failed to update bot heartbeat file '{self._heartbeat_file}': {e}")
+            logger.warning(f"更新 Bot 心跳文件失败 '{self._heartbeat_file}': {e}")
 
     async def _heartbeat_loop(self):
         """Periodically refresh heartbeat file while event loop is healthy."""
@@ -88,23 +88,23 @@ class TelegramBot(SignalHandlingMixin):
     async def _get_price(self, symbol: str) -> float | None:
         """Fetch price using async HTTP client."""
         if not self.fetcher:
-            logger.error("Async fetcher not initialized")
+            logger.error("异步价格获取器未初始化")
             return None
         try:
             return await self.fetcher.get_current_price(symbol)
         except Exception:
-            logger.exception(f"Error fetching price for {symbol}")
+            logger.exception(f"获取 {symbol} 价格失败")
             return None
 
     async def _get_prices(self, symbols: list[str]) -> dict[str, float | None]:
         """Fetch multiple prices concurrently using async HTTP client."""
         if not self.fetcher:
-            logger.error("Async fetcher not initialized")
+            logger.error("异步价格获取器未初始化")
             return {symbol: None for symbol in symbols}
         try:
             return await self.fetcher.get_multiple_prices(symbols)
         except Exception:
-            logger.exception("Error fetching multiple prices")
+            logger.exception("获取多个价格失败")
             return {symbol: None for symbol in symbols}
 
     def _format_uptime(self) -> str:
@@ -227,7 +227,7 @@ class TelegramBot(SignalHandlingMixin):
 
     async def run_async(self):
         """Start the bot asynchronously."""
-        logger.info("Starting Telegram Bot polling...")
+        logger.info("正在启动 Telegram Bot 轮询...")
         heartbeat_task = None
         initialized = False
         started = False
@@ -254,7 +254,7 @@ class TelegramBot(SignalHandlingMixin):
                 polling_started = True
                 await self._shutdown_event.wait()
         finally:
-            logger.info("Stopping Telegram Bot...")
+            logger.info("正在停止 Telegram Bot...")
             try:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
@@ -279,6 +279,6 @@ class TelegramBot(SignalHandlingMixin):
 
     def run(self):
         """Start the bot (synchronous wrapper)."""
-        logger.info("Starting Telegram Bot polling...")
+        logger.info("正在启动 Telegram Bot 轮询...")
         asyncio.run(self.run_async())
 

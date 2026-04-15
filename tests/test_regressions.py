@@ -441,7 +441,7 @@ class PriceMonitorRegressionTests(unittest.TestCase):
         self.assertIn("📊", outputs[-1])
         self.assertEqual(self._count_messages(notifier, "波动警报"), 1)
 
-    def test_milestone_send_failure_does_not_advance_notification_state(self) -> None:
+    def test_milestone_send_failure_advances_cooldown_to_prevent_duplicate(self) -> None:
         class FailingNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 raise RuntimeError("telegram unavailable")
@@ -462,10 +462,11 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertEqual(price_monitor.last_price, 100_000.0)
-        self.assertIsNone(price_monitor.last_milestone_notification_time)
+        # Cooldown is set BEFORE send to prevent duplicate notifications (race condition fix).
+        self.assertEqual(price_monitor.last_price, 101_000.0)
+        self.assertEqual(price_monitor.last_milestone_notification_time, current_time)
 
-    def test_volatility_send_failure_does_not_advance_cooldown(self) -> None:
+    def test_volatility_send_failure_advances_cooldown_to_prevent_duplicate(self) -> None:
         class FailingNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 raise RuntimeError("telegram unavailable")
@@ -491,9 +492,10 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertIsNone(price_monitor.last_volatility_notification_time)
+        # Cooldown is set BEFORE send to prevent duplicate notifications.
+        self.assertEqual(price_monitor.last_volatility_notification_time, current_time)
 
-    def test_volume_send_failure_does_not_advance_cooldown(self) -> None:
+    def test_volume_send_failure_advances_cooldown_to_prevent_duplicate(self) -> None:
         class FailingNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 raise RuntimeError("telegram unavailable")
@@ -519,9 +521,10 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertIsNone(price_monitor.last_volume_alert_time)
+        # Cooldown is set BEFORE send to prevent duplicate notifications.
+        self.assertEqual(price_monitor.last_volume_alert_time, current_time)
 
-    def test_milestone_false_send_result_does_not_advance_notification_state(self) -> None:
+    def test_milestone_false_send_result_advances_cooldown_to_prevent_duplicate(self) -> None:
         class FalseNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 return False
@@ -542,10 +545,11 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertEqual(price_monitor.last_price, 100_000.0)
-        self.assertIsNone(price_monitor.last_milestone_notification_time)
+        # Cooldown is set BEFORE send to prevent duplicate notifications.
+        self.assertEqual(price_monitor.last_price, 101_000.0)
+        self.assertEqual(price_monitor.last_milestone_notification_time, current_time)
 
-    def test_volatility_false_send_result_does_not_advance_cooldown(self) -> None:
+    def test_volatility_false_send_result_advances_cooldown_to_prevent_duplicate(self) -> None:
         class FalseNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 return False
@@ -571,9 +575,10 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertIsNone(price_monitor.last_volatility_notification_time)
+        # Cooldown is set BEFORE send to prevent duplicate notifications.
+        self.assertEqual(price_monitor.last_volatility_notification_time, current_time)
 
-    def test_volume_false_send_result_does_not_advance_cooldown(self) -> None:
+    def test_volume_false_send_result_advances_cooldown_to_prevent_duplicate(self) -> None:
         class FalseNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 return False
@@ -599,7 +604,8 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertIsNone(price_monitor.last_volume_alert_time)
+        # Cooldown is set BEFORE send to prevent duplicate notifications.
+        self.assertEqual(price_monitor.last_volume_alert_time, current_time)
 
 
 class AlertMessagePresenterRegressionTests(unittest.TestCase):
@@ -1304,7 +1310,7 @@ class StablecoinDepegMonitorAsyncPollingTests(unittest.TestCase):
             alerts = asyncio.run(stablecoin_monitor.run_once())
 
         self.assertEqual(alerts, 1)
-        mock_info.assert_called_once_with("Stablecoin poll completed: snapshots=2, alerts=1")
+        mock_info.assert_called_once_with("稳定币轮询完成: snapshots=2, alerts=1")
 
     def test_stablecoin_monitor_run_propagates_cancelled_error(self) -> None:
         notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
@@ -1731,7 +1737,7 @@ class BinanceWebSocketClientRegressionTests(unittest.TestCase):
             asyncio.run(client._message_handler())
 
         on_kline.assert_not_awaited()
-        mock_error.assert_any_call("Failed to parse kline message: Kline message missing valid symbol")
+        mock_error.assert_any_call("解析 kline 消息失败: Kline message missing valid symbol")
 
     def test_message_handler_logs_subscription_confirmation_with_kline_callback(self) -> None:
         async def on_price(symbol: str, price: float) -> None:
@@ -1750,7 +1756,7 @@ class BinanceWebSocketClientRegressionTests(unittest.TestCase):
         with patch("common.clients.websocket.logger.info") as mock_info:
             asyncio.run(client._message_handler())
 
-        mock_info.assert_any_call("Subscription confirmed: {'result': None, 'id': 1}")
+        mock_info.assert_any_call("订阅确认: {'result': None, 'id': 1}")
 
     def test_message_handler_logs_error_message_with_kline_callback(self) -> None:
         async def on_price(symbol: str, price: float) -> None:
@@ -1769,7 +1775,7 @@ class BinanceWebSocketClientRegressionTests(unittest.TestCase):
         with patch("common.clients.websocket.logger.error") as mock_error:
             asyncio.run(client._message_handler())
 
-        mock_error.assert_any_call("Binance error: {'code': 400, 'msg': 'bad request'}")
+        mock_error.assert_any_call("Binance 错误: {'code': 400, 'msg': 'bad request'}")
 
     def test_bad_ticker_payload_is_logged_and_skipped_without_reconnect(self) -> None:
         received = []
@@ -1796,7 +1802,7 @@ class BinanceWebSocketClientRegressionTests(unittest.TestCase):
         self.assertEqual(received, [("BTCUSDT", 95123.45)])
         self.assertEqual(disconnects, ["Connection closed cleanly"])
         self.assertEqual(client.state, ConnectionState.RECONNECTING)
-        mock_error.assert_any_call("Failed to parse ticker message: 'c'")
+        mock_error.assert_any_call("解析 ticker 消息失败: 'c'")
 
 
 class TelegramBotRegressionTests(unittest.TestCase):
@@ -2305,10 +2311,12 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
 class DockerRegressionTests(unittest.TestCase):
     def test_dockerfile_uses_heartbeat_healthcheck(self) -> None:
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+        healthcheck = (Path(__file__).resolve().parents[1] / "scripts" / "healthcheck.py").read_text()
 
-        self.assertIn("/proc/1/cmdline", dockerfile)
-        self.assertIn("/tmp/monitor_heartbeat", dockerfile)
-        self.assertIn("/tmp/bot_heartbeat", dockerfile)
+        self.assertIn("scripts/healthcheck.py", dockerfile)
+        self.assertIn("/proc/1/cmdline", healthcheck)
+        self.assertIn("/tmp/monitor_heartbeat", healthcheck)
+        self.assertIn("/tmp/bot_heartbeat", healthcheck)
         self.assertNotIn("api.binance.com/api/v3/ping", dockerfile)
 
     def test_monitor_main_loads_environment_before_logging(self) -> None:

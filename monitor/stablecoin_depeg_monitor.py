@@ -98,13 +98,26 @@ class StablecoinDepegMonitor:
                 continue
             self._mark_alert_sent(snapshot.symbol, alert_time)
             alerts += 1
-        logger.info(f"Stablecoin poll completed: snapshots={len(snapshots)}, alerts={alerts}")
+        logger.info(f"稳定币轮询完成: snapshots={len(snapshots)}, alerts={alerts}")
         return alerts
 
     async def run(self) -> None:
+        consecutive_failures = 0
+        max_backoff = 600
         while True:
             try:
                 await self.run_once()
+                consecutive_failures = 0
             except Exception as exc:
-                logger.error(f"Stablecoin depeg poll failed: {exc}")
+                consecutive_failures += 1
+                backoff = min(
+                    self.poll_interval_seconds * (2 ** (consecutive_failures - 1)),
+                    max_backoff,
+                )
+                logger.error(
+                    f"稳定币脱锚轮询失败 (连续 {consecutive_failures} 次, "
+                    f"下次重试 {int(backoff)}s 后): {exc}"
+                )
+                await asyncio.sleep(backoff)
+                continue
             await asyncio.sleep(self.poll_interval_seconds)

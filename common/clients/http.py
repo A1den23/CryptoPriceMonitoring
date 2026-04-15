@@ -33,12 +33,12 @@ class BinancePriceFetcher:
 
     def _handle_request_error(self, symbol: str, error: Exception) -> None:
         """Log and convert request errors to BinanceAPIError."""
-        logger.error(f"Error fetching price for {symbol}: {error}")
+        logger.error(f"获取 {symbol} 价格失败: {error}")
         raise BinanceAPIError(f"Failed to fetch price for {symbol}") from error
 
     def _handle_response_error(self, symbol: str, error: Exception) -> None:
         """Log and convert response parsing errors to BinanceAPIError."""
-        logger.error(f"Invalid response for {symbol}: {error}")
+        logger.error(f"{symbol} 响应格式无效: {error}")
         raise BinanceAPIError(f"Invalid response format for {symbol}") from error
 
     @retry(
@@ -94,12 +94,12 @@ class AsyncBinancePriceFetcher:
 
     async def _handle_request_error(self, symbol: str, error: Exception) -> None:
         """Log and convert request errors to BinanceAPIError."""
-        logger.error(f"Error fetching price for {symbol}: {error}")
+        logger.error(f"获取 {symbol} 价格失败: {error}")
         raise BinanceAPIError(f"Failed to fetch price for {symbol}") from error
 
     async def _handle_response_error(self, symbol: str, error: Exception) -> None:
         """Log and convert response parsing errors to BinanceAPIError."""
-        logger.error(f"Invalid response for {symbol}: {error}")
+        logger.error(f"{symbol} 响应格式无效: {error}")
         raise BinanceAPIError(f"Invalid response format for {symbol}") from error
 
     @retry(
@@ -137,7 +137,7 @@ class AsyncBinancePriceFetcher:
         completed = await asyncio.gather(*tasks.values(), return_exceptions=True)
         for symbol, result in zip(tasks.keys(), completed, strict=False):
             if isinstance(result, Exception):
-                logger.error(f"Failed to fetch {symbol} after retries: {result}")
+                logger.error(f"{symbol} 重试后仍获取失败: {result}")
                 results[symbol] = None
             else:
                 results[symbol] = result

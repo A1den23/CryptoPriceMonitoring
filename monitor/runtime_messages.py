@@ -1,6 +1,7 @@
 """Pure runtime message renderers for WebSocket monitor orchestration."""
 
 from datetime import datetime
+from html import escape
 
 
 def render_shutdown_notification(*, current_time: datetime, uptime: str, monitor_count: int) -> str:
@@ -21,7 +22,7 @@ def render_disconnect_alert(*, reason: str, current_time: datetime) -> str:
         f"━━━━━━━━━━━━━━━━━\n"
         f"⚠️ 价格监控连接已中断！\n"
         f"📡 连接状态: 已断开\n"
-        f"🔍 断开原因: {reason}\n"
+        f"🔍 断开原因: {escape(reason)}\n"
         f"⏱️ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"💡 系统正在尝试自动重连..."

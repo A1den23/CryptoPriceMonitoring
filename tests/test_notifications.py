@@ -70,7 +70,7 @@ class TelegramNotifierTests(unittest.TestCase):
             with self.assertLogs("common.logging", level=logging.ERROR) as log_context:
                 self.assertFalse(notifier.test_connection())
 
-        self.assertEqual(log_context.output, ["ERROR:common.logging:Telegram connection test failed"])
+        self.assertEqual(log_context.output, ["ERROR:common.logging:Telegram 连接测试失败"])
 
 
 if __name__ == "__main__":

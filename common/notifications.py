@@ -36,7 +36,7 @@ class TelegramNotifier:
         self._rate_limit_lock = threading.Lock()
 
         if not self.bot_token or not self.chat_id:
-            logger.warning("Telegram bot_token or chat_id not configured")
+            logger.warning("Telegram bot_token 或 chat_id 未配置")
 
     def __repr__(self) -> str:
         """Avoid exposing credentials in debug output."""
@@ -79,13 +79,13 @@ class TelegramNotifier:
     def send_message(self, message: str) -> bool:
         """Send message via Telegram bot with retry mechanism and rate limiting."""
         if not self.bot_token or not self.chat_id:
-            logger.error("Telegram bot_token or chat_id not configured")
+            logger.error("Telegram bot_token 或 chat_id 未配置")
             return False
 
         # Check rate limit
         reserved_at = self._reserve_rate_limit_slot()
         if reserved_at is None:
-            logger.warning("Telegram rate limit exceeded, dropping message")
+            logger.warning("Telegram 发送频率超限，丢弃消息")
             return False
 
         url = self._build_api_url("sendMessage")
@@ -104,25 +104,25 @@ class TelegramNotifier:
         try:
             payload = response.json()
         except ValueError:
-            logger.error("Telegram API returned malformed JSON")
+            logger.error("Telegram API 返回了格式错误的 JSON")
             return False
 
         if not isinstance(payload, dict):
-            logger.error("Telegram API returned unexpected payload type: %s", type(payload).__name__)
+            logger.error("Telegram API 返回了意外的负载类型: %s", type(payload).__name__)
             return False
 
         if payload.get("ok") is False:
             logger.error(
-                "Telegram API rejected message: %s",
-                payload.get("description", "unknown error"),
+                "Telegram API 拒绝消息: %s",
+                payload.get("description", "未知错误"),
             )
             return False
 
         if payload.get("ok") is True:
-            logger.info("Telegram message sent successfully")
+            logger.info("Telegram 消息发送成功")
             return True
 
-        logger.error("Telegram API response missing explicit ok=true")
+        logger.error("Telegram API 响应缺少明确的 ok=true")
         return False
 
     def close(self) -> None:
@@ -137,5 +137,5 @@ class TelegramNotifier:
                 "正在监控多个加密货币价格..."
             )
         except Exception:
-            logger.error("Telegram connection test failed")
+            logger.error("Telegram 连接测试失败")
             return False

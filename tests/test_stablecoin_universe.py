@@ -222,8 +222,11 @@ class StablecoinUniverseCacheTests(unittest.IsolatedAsyncioTestCase):
             cache_path = Path(temp_dir) / "stablecoin_top25.json"
             write_cached_stablecoin_universe(cached, cache_path)
 
-            with self.assertRaises(ValueError):
-                await resolve_live_snapshots_for_cached_universe(client, cache_path)
+            # Missing symbols are now skipped instead of raising.
+            result = await resolve_live_snapshots_for_cached_universe(client, cache_path)
+            # Only the USDC snapshot should be resolved (USDT is missing from live data).
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].symbol, "USDC")
 
 
 if __name__ == "__main__":

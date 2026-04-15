@@ -69,7 +69,7 @@ class SignalHandlingMixin:
         from .logging import logger
 
         sig_name = _signal.Signals(signum).name
-        logger.info(f"Received signal {sig_name} ({signum}), initiating graceful shutdown...")
+        logger.info(f"收到信号 {sig_name} ({signum})，开始优雅停机...")
         original = self._signal_registry.get_original(signum)
         if original is not None:
             SignalHandlerRegistry._restore_signal(signum, original)

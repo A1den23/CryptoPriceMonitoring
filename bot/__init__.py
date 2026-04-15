@@ -94,14 +94,14 @@ def main():
             )
             try:
                 notifier.send_message(startup_message)
-                logger.info("Startup notification sent")
+                logger.info("启动通知已发送")
             except Exception:
-                logger.exception("Startup notification failed")
+                logger.exception("启动通知发送失败")
 
             bot.run()
 
             if bot._shutdown_event.is_set():
-                logger.info("Bot stopped via signal")
+                logger.info("Bot 已通过信号停止")
                 shutdown_message = (
                     "👋 <b>Telegram 交互机器人已停止</b>\n\n"
                     "机器人已完成优雅关闭。\n\n"
@@ -109,15 +109,15 @@ def main():
                 )
                 try:
                     notifier.send_message(shutdown_message)
-                    logger.info("Shutdown notification sent")
+                    logger.info("停机通知已发送")
                 except Exception:
-                    logger.exception("Shutdown notification failed")
+                    logger.exception("停机通知发送失败")
 
         except ValueError as e:
-            logger.error(f"Configuration error: {e}")
+            logger.error(f"配置错误: {e}")
             print("\nPlease make sure TELEGRAM_BOT_TOKEN is set in your .env file")
         except KeyboardInterrupt:
-            logger.info("Bot stopped by user (KeyboardInterrupt)")
+            logger.info("Bot 被用户中断 (KeyboardInterrupt)")
     finally:
         close = getattr(notifier, "close", None)
         if callable(close):

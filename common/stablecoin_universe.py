@@ -137,9 +137,10 @@ async def resolve_live_snapshots_for_cached_universe(
         if live_snapshot is None:
             live_snapshot = live_by_symbol.get(cached_snapshot.symbol)
         if live_snapshot is None:
-            raise ValueError(
-                f"Cached stablecoin missing from live data: {cached_snapshot.symbol}"
+            logger.warning(
+                f"缓存中的稳定币在实时数据中不存在: {cached_snapshot.symbol}，已跳过"
             )
+            continue
         resolved.append(
             StablecoinSnapshot(
                 name=live_snapshot.name,
@@ -165,7 +166,7 @@ def main() -> None:
     config = ConfigManager()
     universe = asyncio.run(_refresh_from_config(config))
     logger.info(
-        f"Stablecoin universe refreshed: cache={config.stablecoin_universe_cache_path}, snapshots={len(universe.snapshots)}"
+        f"稳定币 universe 已刷新: cache={config.stablecoin_universe_cache_path}, snapshots={len(universe.snapshots)}"
     )
 
 

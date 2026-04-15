@@ -13,7 +13,7 @@ This module is organized into submodules for better maintainability:
 from importlib import import_module
 
 from .config import CoinConfig, ConfigManager, load_environment
-from .logging import get_logger, logger, setup_logging
+from .logging import logger, setup_logging
 from .utils import (
     TZ,
     UTC8,
@@ -33,7 +33,6 @@ __all__ = [
     # Logging
     "setup_logging",
     "logger",
-    "get_logger",
     # Clients
     "BinancePriceFetcher",
     "AsyncBinancePriceFetcher",

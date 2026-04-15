@@ -50,7 +50,7 @@ class DefiLlamaClient:
     def parse_stablecoins(self, payload: dict, top_n: int | None) -> list[StablecoinSnapshot]:
         pegged_assets = payload.get("peggedAssets")
         if not isinstance(pegged_assets, list):
-            logger.error("Invalid DefiLlama payload: missing peggedAssets list")
+            logger.error("DefiLlama 响应无效：缺少 peggedAssets 列表")
             raise ValueError("Invalid DefiLlama payload")
 
         snapshots: list[StablecoinSnapshot] = []

@@ -51,14 +51,7 @@ def _safe_int_env(
     max_val: int = 1_000_000_000,
 ) -> int:
     """Safely read integer environment variable with bounds."""
-    raw = os.getenv(name, str(default))
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return default
-    if value < min_val or value > max_val:
-        return default
-    return value
+    return _safe_int(os.getenv(name, str(default)), default, min_val, max_val)
 
 
 def _safe_float_env(
@@ -68,16 +61,7 @@ def _safe_float_env(
     max_val: float = 1_000_000_000.0,
 ) -> float:
     """Safely read float environment variable with bounds."""
-    raw = os.getenv(name, str(default))
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return default
-    if not math.isfinite(value):
-        return default
-    if value < min_val or value > max_val:
-        return default
-    return value
+    return _safe_float(os.getenv(name, str(default)), default, min_val, max_val)
 
 
 def _safe_int(

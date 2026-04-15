@@ -82,7 +82,7 @@ class BinanceWebSocketClient:
         self.last_message_time: datetime | None = None
         self.connection_time: datetime | None = None
 
-        logger.info(f"BinanceWebSocketClient initialized for {len(symbols)} symbols")
+        logger.info(f"BinanceWebSocketClient 已初始化，监控 {len(symbols)} 个交易对")
 
     def _set_state(self, state: ConnectionState) -> None:
         """Transition connection state and wake up waiters."""
@@ -98,7 +98,7 @@ class BinanceWebSocketClient:
         for symbol in self.symbols:
             # Validate symbol format
             if not symbol or not self._VALID_SYMBOL_PATTERN.match(symbol):
-                logger.warning(f"Invalid symbol format: {symbol}")
+                logger.warning(f"交易对格式无效: {symbol}")
                 continue
 
             symbol_lower = symbol.lower()
@@ -118,7 +118,7 @@ class BinanceWebSocketClient:
 
     async def _message_handler(self):
         """Handle incoming WebSocket messages"""
-        logger.info("Message handler started")
+        logger.info("消息处理器已启动")
 
         try:
             async for message in self.websocket:
@@ -137,18 +137,18 @@ class BinanceWebSocketClient:
 
                     # Subscription confirmation
                     if "result" in data:
-                        logger.info(f"Subscription confirmed: {data}")
+                        logger.info(f"订阅确认: {data}")
 
                     # Error message
                     elif "code" in data:
-                        logger.error(f"Binance error: {data}")
+                        logger.error(f"Binance 错误: {data}")
 
                     # Ticker update
                     elif event_type == "24hrTicker" or inner_event == "24hrTicker":
                         try:
                             symbol, price = parse_ticker_message(data)
                         except (KeyError, ValueError, TypeError) as e:
-                            logger.error(f"Failed to parse ticker message: {e}")
+                            logger.error(f"解析 ticker 消息失败: {e}")
                             continue
 
                         # Update statistics
@@ -161,7 +161,7 @@ class BinanceWebSocketClient:
                         except BrokenPipeError:
                             pass
                         except Exception:
-                            logger.exception("Error in price callback")
+                            logger.exception("价格回调异常")
 
                     # Kline update
                     elif event_type == "kline" or inner_event == "kline":
@@ -169,7 +169,7 @@ class BinanceWebSocketClient:
                             try:
                                 kline_data = parse_kline_message(data)
                             except (KeyError, ValueError, TypeError) as e:
-                                logger.error(f"Failed to parse kline message: {e}")
+                                logger.error(f"解析 kline 消息失败: {e}")
                                 continue
                             if kline_data and kline_data[3]:  # is_closed
                                 symbol, price, volume, _ = kline_data
@@ -184,24 +184,24 @@ class BinanceWebSocketClient:
                                 except BrokenPipeError:
                                     pass
                                 except Exception:
-                                    logger.exception("Error in kline callback")
+                                    logger.exception("Kline 回调异常")
 
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Invalid JSON received: {e}")
+                    logger.warning(f"收到无效 JSON: {e}")
 
             if not self._stop_event.is_set() and self.state == ConnectionState.CONNECTED:
-                logger.warning("WebSocket message stream ended cleanly")
+                logger.warning("WebSocket 消息流正常结束")
                 self._set_state(ConnectionState.RECONNECTING)
                 await self._trigger_disconnect_alert("Connection closed cleanly")
         except websockets.exceptions.ConnectionClosed as e:
-            logger.warning(f"WebSocket connection closed: {e}")
+            logger.warning(f"WebSocket 连接关闭: {e}")
             if not self._stop_event.is_set():
                 self._set_state(ConnectionState.RECONNECTING)
                 await self._trigger_disconnect_alert(f"Connection closed: {e}")
         except asyncio.CancelledError:
             raise  # Re-raise to allow proper cancellation
         except Exception as e:
-            logger.error(f"Error in message handler: {e}")
+            logger.error(f"消息处理器异常: {e}")
             if not self._stop_event.is_set():
                 self._set_state(ConnectionState.RECONNECTING)
                 await self._trigger_disconnect_alert(f"Error: {e}")
@@ -219,7 +219,7 @@ class BinanceWebSocketClient:
         try:
             await self.on_disconnect_callback(reason)
         except Exception as cb_err:
-            logger.error(f"Error in disconnect callback: {cb_err}")
+            logger.error(f"断开连接回调异常: {cb_err}")
 
     async def _reset_disconnect_alert_flag(self):
         """Reset disconnect alert flag after successful reconnection"""
@@ -229,7 +229,7 @@ class BinanceWebSocketClient:
     async def _ping_handler(self):
         """Send periodic ping frames to keep connection alive"""
         logger.info(
-            f"Ping handler started (interval: {self.ping_interval}s, pong timeout: {self.pong_timeout}s)"
+            f"Ping 处理器已启动 (间隔: {self.ping_interval}s, pong 超时: {self.pong_timeout}s)"
         )
 
         while not self._stop_event.is_set() and self.state == ConnectionState.CONNECTED:
@@ -240,7 +240,7 @@ class BinanceWebSocketClient:
                     # Send ping and require timely pong
                     pong_waiter = await self.websocket.ping()
                     await asyncio.wait_for(pong_waiter, timeout=self.pong_timeout)
-                    logger.debug("Ping sent")
+                    logger.debug("Ping 已发送")
                 else:
                     break
 
@@ -253,7 +253,7 @@ class BinanceWebSocketClient:
                 self._set_state(ConnectionState.RECONNECTING)
                 break
             except Exception as e:
-                logger.error(f"Error sending ping: {e}")
+                logger.error(f"发送 Ping 异常: {e}")
                 await self._trigger_disconnect_alert(f"Ping failed: {e}")
                 if self.websocket and not self.websocket.closed:
                     await self.websocket.close()
@@ -264,7 +264,7 @@ class BinanceWebSocketClient:
         """Reconnect when the socket is connected but no market data arrives for too long."""
         check_interval = max(2.0, min(self.ping_interval, 10.0))
         logger.info(
-            f"Connection watchdog started (message timeout: {self.message_timeout}s, check every: {check_interval}s)"
+            f"连接看门狗已启动 (消息超时: {self.message_timeout}s, 检查间隔: {check_interval}s)"
         )
 
         while not self._stop_event.is_set() and self.state == ConnectionState.CONNECTED:
@@ -294,7 +294,7 @@ class BinanceWebSocketClient:
         url = self._build_stream_url()
 
         try:
-            logger.info(f"Connecting to Binance WebSocket: {url}")
+            logger.info(f"正在连接 Binance WebSocket: {url}")
 
             # Set connection timeout
             self.websocket = await asyncio.wait_for(
@@ -310,7 +310,7 @@ class BinanceWebSocketClient:
             self.connection_time = self._now()
             self.last_message_time = self._now()
 
-            logger.info("WebSocket connected successfully")
+            logger.info("WebSocket 连接成功")
 
             # Start message handler
             self._message_task = asyncio.create_task(self._message_handler())
@@ -323,10 +323,10 @@ class BinanceWebSocketClient:
             return True
 
         except asyncio.TimeoutError:
-            logger.error("Connection timeout")
+            logger.error("连接超时")
             return False
         except Exception as e:
-            logger.error(f"Connection failed: {e}")
+            logger.error(f"连接失败: {e}")
             return False
 
     async def _reconnect_loop(self) -> bool:
@@ -343,13 +343,13 @@ class BinanceWebSocketClient:
                 self.max_reconnect_attempts is not None
                 and failed_attempts >= self.max_reconnect_attempts
             ):
-                logger.error(f"Max reconnection attempts ({self.max_reconnect_attempts}) reached")
+                logger.error(f"已达到最大重连次数 ({self.max_reconnect_attempts})")
                 self._set_state(ConnectionState.DISCONNECTED)
                 return False
 
             # Wait before reconnecting
             attempt_no = failed_attempts + 1
-            logger.info(f"Reconnecting in {self.reconnect_delay}s... (attempt {attempt_no})")
+            logger.info(f"{self.reconnect_delay}s 后重连... (第 {attempt_no} 次)")
             await asyncio.sleep(self.reconnect_delay)
 
             # Attempt reconnection
@@ -365,7 +365,7 @@ class BinanceWebSocketClient:
                     try:
                         await self.on_reconnect_callback(self.reconnect_count)
                     except Exception as cb_err:
-                        logger.error(f"Error in reconnect callback: {cb_err}")
+                        logger.error(f"重连回调异常: {cb_err}")
                 return True
 
             failed_attempts = attempt_no
@@ -385,7 +385,7 @@ class BinanceWebSocketClient:
 
     async def start(self):
         """Start WebSocket connection with auto-reconnect"""
-        logger.info("Starting Binance WebSocket client...")
+        logger.info("正在启动 Binance WebSocket 客户端...")
 
         while not self._stop_event.is_set():
             # Connect only when not already connected.
@@ -393,7 +393,7 @@ class BinanceWebSocketClient:
             if self.state != ConnectionState.CONNECTED:
                 success = await self._connect()
                 if not success:
-                    logger.error("Failed to establish connection")
+                    logger.error("建立连接失败")
                     self._set_state(ConnectionState.RECONNECTING)
                     reconnect_success = await self._reconnect_loop()
                     if not reconnect_success:
@@ -402,15 +402,24 @@ class BinanceWebSocketClient:
                         continue
 
             # Connection established, wait for disconnection or shutdown
-            await asyncio.wait(
-                [asyncio.create_task(self._disconnected_event.wait()),
-                 asyncio.create_task(self._stop_event.wait())],
+            wait_tasks = [
+                asyncio.create_task(self._disconnected_event.wait()),
+                asyncio.create_task(self._stop_event.wait()),
+            ]
+            done, pending = await asyncio.wait(
+                wait_tasks,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
             # If we're here, connection was lost
             if not self._stop_event.is_set():
-                logger.warning("Connection lost, attempting to reconnect...")
+                logger.warning("连接丢失，正在尝试重连...")
                 self._set_state(ConnectionState.RECONNECTING)
 
                 # Cancel old tasks
@@ -426,7 +435,7 @@ class BinanceWebSocketClient:
 
     async def stop(self):
         """Stop WebSocket connection gracefully"""
-        logger.info("Stopping WebSocket client...")
+        logger.info("正在停止 WebSocket 客户端...")
         self._stop_event.set()
         self._set_state(ConnectionState.STOPPED)
 
@@ -442,11 +451,11 @@ class BinanceWebSocketClient:
             try:
                 await self.websocket.close()
             except Exception as e:
-                logger.debug(f"Error closing WebSocket: {e}")
+                logger.debug(f"关闭 WebSocket 异常: {e}")
             finally:
                 self.websocket = None
 
-        logger.info("WebSocket client stopped")
+        logger.info("WebSocket 客户端已停止")
 
     def get_statistics(self) -> dict:
         """Get connection statistics."""

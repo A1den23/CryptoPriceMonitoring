@@ -119,7 +119,7 @@ async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAUL
         message = render_stablecoin_prices_message(stablecoins, self._format_timestamp())
         await self._send_or_edit_message(update.effective_chat.id, message)
     except Exception as exc:
-        logger.error(f"Error fetching stablecoin prices: {exc}")
+        logger.error(f"获取稳定币价格失败: {exc}")
         await self._send_or_edit_message(update.effective_chat.id, "❌ 获取前25稳定币价格失败")
 
 
@@ -137,7 +137,7 @@ async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TY
     elif callback_data.startswith("price_"):
         coin = callback_data.removeprefix("price_")
         if not coin:
-            logger.warning(f"Ignoring invalid callback data: {callback_data}")
+            logger.warning(f"忽略无效回调数据: {callback_data}")
             return
         await self.send_price_update(query.message.chat_id, coin, message=query.message)
 
@@ -183,7 +183,7 @@ async def send_price_update(self, chat_id, coin_name, message=None):
                 message=message,
             )
     except Exception as e:
-        logger.error(f"Error sending price update for {coin_name}: {e}")
+        logger.error(f"发送 {coin_name} 价格更新失败: {e}")
         await self._send_or_edit_message(
             chat_id,
             f"❌ 获取 {coin_name} 价格时出错",

@@ -99,24 +99,3 @@ def setup_logging(
 
 # Module-level logger (configured after setup_logging is called)
 logger = logging.getLogger(__name__)
-
-
-def get_logger(name: str | None = None) -> logging.Logger:
-    """[DEPRECATED] Get a logger instance.
-
-    This function is deprecated. Use logging.getLogger() directly or
-    import 'logger' from this module instead.
-
-    Args:
-        name: Logger name. If None, uses __name__.
-
-    Returns:
-        logging.Logger: Configured logger instance.
-    """
-    import warnings
-    warnings.warn(
-        "get_logger() is deprecated, use logging.getLogger() or import 'logger' from this module",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    return logging.getLogger(name or __name__)
