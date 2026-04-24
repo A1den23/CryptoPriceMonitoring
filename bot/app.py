@@ -16,7 +16,7 @@ from common.clients.http import AsyncBinancePriceFetcher
 from common.config import CoinConfig, ConfigManager
 from common.logging import logger
 from common.notifications import TelegramNotifier
-from common.runtime import SignalHandlerRegistry, SignalHandlingMixin
+from common.runtime import HeartbeatWriter, SignalHandlerRegistry, SignalHandlingMixin
 from common.utils import format_threshold, now_in_configured_timezone
 
 from . import handlers, messages
@@ -60,6 +60,7 @@ class TelegramBot(SignalHandlingMixin):
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("all", self.all_prices_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
+        self.command_router = handlers.BotCommandRouter(self)
 
         self._shutdown_event = asyncio.Event()
         self._signal_registry = SignalHandlerRegistry()
@@ -68,16 +69,13 @@ class TelegramBot(SignalHandlingMixin):
         self.start_time: datetime | None = None
         self._heartbeat_file = Path(self.config.bot_heartbeat_file)
         self._heartbeat_interval = self.config.bot_heartbeat_interval_seconds
+        self._heartbeat_writer = HeartbeatWriter(self._heartbeat_file, label="Bot")
 
         logger.info("Telegram Bot 初始化成功")
 
     def _touch_heartbeat(self) -> None:
         """Touch heartbeat file to indicate bot event loop is alive."""
-        try:
-            self._heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
-            self._heartbeat_file.touch()
-        except OSError as e:
-            logger.warning(f"更新 Bot 心跳文件失败 '{self._heartbeat_file}': {e}")
+        self._heartbeat_writer.touch()
 
     async def _heartbeat_loop(self):
         """Periodically refresh heartbeat file while event loop is healthy."""
@@ -195,35 +193,35 @@ class TelegramBot(SignalHandlingMixin):
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
-        await handlers.start_command(self, update, context)
+        await self.command_router.start_command(update, context)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command."""
-        await handlers.help_command(self, update, context)
+        await self.command_router.help_command(update, context)
 
     async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /price command with input validation."""
-        await handlers.price_command(self, update, context)
+        await self.command_router.price_command(update, context)
 
     async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stablecoins command."""
-        await handlers.stablecoins_command(self, update, context)
+        await self.command_router.stablecoins_command(update, context)
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
-        await handlers.status_command(self, update, context)
+        await self.command_router.status_command(update, context)
 
     async def all_prices_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /all command."""
-        await handlers.all_prices_command(self, update, context)
+        await self.command_router.all_prices_command(update, context)
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline button callbacks."""
-        await handlers.button_callback(self, update, context)
+        await self.command_router.button_callback(update, context)
 
     async def send_price_update(self, chat_id, coin_name, message=None):
         """Send a single-coin price update."""
-        await handlers.send_price_update(self, chat_id, coin_name, message=message)
+        await self.command_router.send_price_update(chat_id, coin_name, message=message)
 
     async def run_async(self):
         """Start the bot asynchronously."""
@@ -281,4 +279,3 @@ class TelegramBot(SignalHandlingMixin):
         """Start the bot (synchronous wrapper)."""
         logger.info("正在启动 Telegram Bot 轮询...")
         asyncio.run(self.run_async())
-

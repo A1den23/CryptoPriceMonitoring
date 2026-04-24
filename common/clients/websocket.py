@@ -283,7 +283,7 @@ class BinanceWebSocketClient:
             reason = f"No market messages for {int(silence_seconds)}s (timeout={self.message_timeout}s)"
             logger.error(reason)
             await self._trigger_disconnect_alert(reason)
-            self.state = ConnectionState.RECONNECTING
+            self._set_state(ConnectionState.RECONNECTING)
             if self.websocket and not self.websocket.closed:
                 await self.websocket.close()
             break

@@ -35,45 +35,56 @@ def _serialize_snapshot(snapshot: StablecoinSnapshot) -> dict[str, str | float |
     }
 
 
+class StablecoinUniverseRepository:
+    """Read and write the cached stablecoin universe."""
+
+    def __init__(self, cache_path: str | Path) -> None:
+        self.path = _normalize_cache_path(cache_path)
+
+    def write(self, universe: CachedStablecoinUniverse) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "refreshed_at": universe.refreshed_at,
+            "top_n": universe.top_n,
+            "snapshots": [_serialize_snapshot(snapshot) for snapshot in universe.snapshots],
+        }
+
+        with NamedTemporaryFile("w", encoding="utf-8", dir=self.path.parent, delete=False) as temp_file:
+            json.dump(payload, temp_file, ensure_ascii=False)
+            temp_name = temp_file.name
+
+        Path(temp_name).replace(self.path)
+
+    def load(self) -> CachedStablecoinUniverse:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            snapshots = [
+                StablecoinSnapshot(
+                    name=str(item["name"]),
+                    symbol=str(item["symbol"]),
+                    price=float(item["price"]),
+                    circulating=float(item["circulating"]),
+                    rank=int(item["rank"]),
+                )
+                for item in payload["snapshots"]
+            ]
+            return CachedStablecoinUniverse(
+                refreshed_at=str(payload["refreshed_at"]),
+                top_n=int(payload["top_n"]),
+                snapshots=snapshots,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError(f"Stablecoin universe cache not found: {self.path}") from exc
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid stablecoin universe cache: {self.path}") from exc
+
+
 def write_cached_stablecoin_universe(universe: CachedStablecoinUniverse, cache_path: str | Path) -> None:
-    path = _normalize_cache_path(cache_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "refreshed_at": universe.refreshed_at,
-        "top_n": universe.top_n,
-        "snapshots": [_serialize_snapshot(snapshot) for snapshot in universe.snapshots],
-    }
-
-    with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temp_file:
-        json.dump(payload, temp_file, ensure_ascii=False)
-        temp_name = temp_file.name
-
-    Path(temp_name).replace(path)
+    StablecoinUniverseRepository(cache_path).write(universe)
 
 
 def load_cached_stablecoin_universe(cache_path: str | Path) -> CachedStablecoinUniverse:
-    path = _normalize_cache_path(cache_path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        snapshots = [
-            StablecoinSnapshot(
-                name=str(item["name"]),
-                symbol=str(item["symbol"]),
-                price=float(item["price"]),
-                circulating=float(item["circulating"]),
-                rank=int(item["rank"]),
-            )
-            for item in payload["snapshots"]
-        ]
-        return CachedStablecoinUniverse(
-            refreshed_at=str(payload["refreshed_at"]),
-            top_n=int(payload["top_n"]),
-            snapshots=snapshots,
-        )
-    except FileNotFoundError as exc:
-        raise ValueError(f"Stablecoin universe cache not found: {path}") from exc
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid stablecoin universe cache: {path}") from exc
+    return StablecoinUniverseRepository(cache_path).load()
 
 
 def compute_next_stablecoin_universe_refresh_time(
@@ -103,7 +114,7 @@ async def refresh_stablecoin_universe(
         top_n=top_n,
         snapshots=snapshots,
     )
-    write_cached_stablecoin_universe(universe, cache_path)
+    StablecoinUniverseRepository(cache_path).write(universe)
     return universe
 
 

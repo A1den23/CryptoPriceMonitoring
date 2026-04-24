@@ -21,6 +21,37 @@ from .messages import (
 )
 
 
+class BotCommandRouter:
+    """Bind Telegram command handlers to a TelegramBot instance."""
+
+    def __init__(self, bot) -> None:
+        self.bot = bot
+
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await start_command(self.bot, update, context)
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await help_command(self.bot, update, context)
+
+    async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await price_command(self.bot, update, context)
+
+    async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await stablecoins_command(self.bot, update, context)
+
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await status_command(self.bot, update, context)
+
+    async def all_prices_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await all_prices_command(self.bot, update, context)
+
+    async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await button_callback(self.bot, update, context)
+
+    async def send_price_update(self, chat_id, coin_name, message=None):
+        await send_price_update(self.bot, chat_id, coin_name, message=message)
+
+
 async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     await update.message.reply_text(

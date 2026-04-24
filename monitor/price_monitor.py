@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from common.config import CoinConfig
 from common.logging import logger
 from common.notifications import TelegramNotifier
+from common.runtime import BackgroundTaskSet
 from common.utils import (
     format_price,
     format_threshold,
@@ -20,6 +21,12 @@ from common.utils import (
     now_in_configured_timezone,
 )
 
+from .alert_evaluators import (
+    MilestoneEvaluator,
+    VolatilityEvaluator,
+    VolatilityMetrics,
+    VolumeAnomalyEvaluator,
+)
 from .alerts import (
     render_milestone_alert,
     render_volatility_alert,
@@ -44,16 +51,6 @@ class VolumeData:
     timestamp: datetime
 
 
-@dataclass(slots=True)
-class VolatilityMetrics:
-    """Volatility metrics derived from a rolling price window."""
-
-    std_dev_pct: float
-    cumulative_volatility_pct: float
-    range_volatility_pct: float
-    acceleration: float
-
-
 class PriceMonitor:
     """Monitor price changes for a single coin."""
 
@@ -74,6 +71,12 @@ class PriceMonitor:
     ):
         self.config = config
         self.notifier = notifier
+        self.milestone_evaluator = MilestoneEvaluator(
+            symbol=config.symbol,
+            threshold=config.integer_threshold,
+        )
+        self.volatility_evaluator = VolatilityEvaluator()
+        self.volume_evaluator = VolumeAnomalyEvaluator()
 
         self.price_sample_interval_seconds = max(
             self.MIN_PRICE_SAMPLE_INTERVAL_SECONDS,
@@ -109,15 +112,14 @@ class PriceMonitor:
         self.last_volume_alert_time: datetime | None = None
         self.volume_alert_cooldown_seconds = volume_alert_cooldown_seconds
         self.latest_volume_info: str | None = None
-        self._notification_tasks: set[asyncio.Task] = set()
+        self._notification_task_set = BackgroundTaskSet(cleanup_error_message=None)
+        self._notification_tasks = self._notification_task_set.tasks
 
     def _calculate_milestone(self, price: float, threshold: float) -> float:
         """Calculate the milestone for a given price and threshold."""
-        if threshold <= 0:
-            raise ValueError(f"Invalid threshold for {self.config.symbol}: {threshold}")
-
-        epsilon = max(threshold * 1e-9, 1e-12)
-        return math.floor((price + epsilon) / threshold) * threshold
+        if threshold == self.milestone_evaluator.threshold:
+            return self.milestone_evaluator.calculate_milestone(price)
+        return MilestoneEvaluator(self.config.symbol, threshold).calculate_milestone(price)
 
     def _is_in_milestone_cooldown(self, coin: str, _now: datetime | None = None) -> bool:
         """Check if milestone notification is in cooldown period."""
@@ -148,10 +150,7 @@ class PriceMonitor:
 
     async def flush_notification_tasks(self) -> None:
         """Wait for any queued notification tasks to finish."""
-        if not self._notification_tasks:
-            return
-
-        await asyncio.gather(*tuple(self._notification_tasks), return_exceptions=True)
+        await self._notification_task_set.flush()
 
     def _send_notification(self, message: str, on_success: Callable[[], None] | None = None) -> bool:
         """Send notification without blocking the event loop."""
@@ -170,8 +169,7 @@ class PriceMonitor:
             sent = await asyncio.to_thread(self.notifier.send_message, message)
             return _handle_success(sent)
 
-        task = loop.create_task(_send_async())
-        self._notification_tasks.add(task)
+        task = self._notification_task_set.track(loop.create_task(_send_async()))
         task.add_done_callback(self._on_notification_done)
         return True
 
@@ -212,14 +210,19 @@ class PriceMonitor:
             return False
 
         try:
-            current_milestone = self._calculate_milestone(current_price, threshold)
-            last_milestone = self._calculate_milestone(self.last_price, threshold)
+            evaluator = self.milestone_evaluator
+            if threshold != evaluator.threshold:
+                evaluator = MilestoneEvaluator(self.config.symbol, threshold)
+            crossed, current_milestone = evaluator.has_crossed(
+                self.last_price,
+                current_price,
+            )
         except ValueError as e:
             logger.error(str(e))
             self.last_price = current_price
             return False
 
-        if last_milestone != current_milestone:
+        if crossed:
             if self._is_in_milestone_cooldown(coin, _now=_now):
                 self.last_price = current_price
                 return False
@@ -253,44 +256,23 @@ class PriceMonitor:
 
     def _calculate_std_dev_metric(self, prices: list[float]) -> float:
         """Calculate standard deviation percentage."""
-        mean_price = sum(prices) / len(prices)
-        variance = sum((p - mean_price) ** 2 for p in prices) / len(prices)
-        std_dev = variance ** 0.5
-        return (std_dev / mean_price) * 100 if mean_price > 0 else 0
+        return self.volatility_evaluator.calculate_std_dev_pct(prices)
 
     def _calculate_cumulative_metric(self, prices: list[float]) -> float:
         """Calculate cumulative volatility percentage."""
-        if len(prices) < 2:
-            return 0.0
-        cumulative_change = sum(abs(prices[i] - prices[i - 1]) for i in range(1, len(prices)))
-        return (cumulative_change / prices[0]) * 100 if prices[0] > 0 else 0
+        return self.volatility_evaluator.calculate_cumulative_pct(prices)
 
     def _calculate_range_metric(self, prices: list[float]) -> float:
         """Calculate min/max range volatility percentage."""
-        min_price = min(prices)
-        max_price = max(prices)
-        return ((max_price - min_price) / min_price) * 100 if min_price > 0 else 0
+        return self.volatility_evaluator.calculate_range_pct(prices)
 
     def _calculate_acceleration_metric(self, prices: list[float]) -> float:
         """Calculate volatility acceleration."""
-        if len(prices) < 4:
-            return 1
-        recent_prices = prices[-4:]
-        recent_changes = [
-            abs(recent_prices[i] - recent_prices[i - 1])
-            for i in range(1, len(recent_prices))
-        ]
-        avg_change = (sum(recent_changes) / len(recent_changes)) if recent_changes else 0
-        return (max(recent_changes) / avg_change) if avg_change > 0 else 1
+        return self.volatility_evaluator.calculate_acceleration(prices)
 
     def _build_volatility_metrics(self, prices: list[float]) -> VolatilityMetrics:
         """Build volatility metrics from the current rolling price window."""
-        return VolatilityMetrics(
-            std_dev_pct=self._calculate_std_dev_metric(prices),
-            cumulative_volatility_pct=self._calculate_cumulative_metric(prices),
-            range_volatility_pct=self._calculate_range_metric(prices),
-            acceleration=self._calculate_acceleration_metric(prices),
-        )
+        return self.volatility_evaluator.build_metrics(prices)
 
     def _evaluate_volatility_thresholds(
         self,
@@ -298,37 +280,14 @@ class PriceMonitor:
         threshold: float,
     ) -> tuple[bool, list[str]]:
         """Evaluate whether the current window exceeds volatility thresholds."""
-        std_dev_pct = metrics.std_dev_pct
-        cumulative_volatility_pct = metrics.cumulative_volatility_pct
-        range_volatility_pct = metrics.range_volatility_pct
-        acceleration = metrics.acceleration
-
-        cumulative_alert = False
-        if cumulative_volatility_pct >= threshold:
-            if cumulative_volatility_pct > self.last_cumulative_volatility:
-                cumulative_alert = True
-
-        self.last_cumulative_volatility = cumulative_volatility_pct
-
-        is_volatile = (
-            std_dev_pct >= threshold * 0.7
-            or cumulative_alert
-            or range_volatility_pct >= threshold
-            or (acceleration >= 2.0 and std_dev_pct >= threshold * 0.3)
+        evaluation = self.volatility_evaluator.evaluate(
+            metrics,
+            threshold,
+            self.last_cumulative_volatility,
         )
+        self.last_cumulative_volatility = evaluation.next_cumulative_volatility
 
-        reasons = []
-        if is_volatile:
-            if std_dev_pct >= threshold * 0.7:
-                reasons.append(f"标准差: {std_dev_pct:.2f}%")
-            if cumulative_alert:
-                reasons.append(f"累计波动: {cumulative_volatility_pct:.2f}%")
-            if range_volatility_pct >= threshold:
-                reasons.append(f"区间波动: {range_volatility_pct:.2f}%")
-            if acceleration >= 2.0 and std_dev_pct >= threshold * 0.3:
-                reasons.append(f"加速度: {acceleration:.1f}x")
-
-        return is_volatile, reasons
+        return evaluation.is_volatile, evaluation.reasons
 
     def _is_in_volatility_cooldown(self, current_time: datetime | None = None) -> bool:
         """Check if volatility notification is in cooldown period."""
@@ -420,23 +379,21 @@ class PriceMonitor:
         if len(self.volume_history) < self.MIN_VOLUME_DATA_POINTS:
             return None
 
-        volumes = [entry.volume for entry in self.volume_history]
-        baseline_volumes = volumes[:-1]
-        avg_volume = sum(baseline_volumes) / len(baseline_volumes)
-        current_volume = volumes[-1]
-
-        if avg_volume <= 0:
+        evaluation = self.volume_evaluator.evaluate(
+            [entry.volume for entry in self.volume_history],
+            self.config.volume_alert_multiplier,
+        )
+        if evaluation is None:
             return None
 
-        volume_multiplier = current_volume / avg_volume
-        volume_alert_multiplier = self.config.volume_alert_multiplier
+        volume_multiplier = evaluation.volume_multiplier
 
         if self.last_volume_alert_time:
             time_since_last = (current_time - self.last_volume_alert_time).total_seconds()
             if time_since_last < self.volume_alert_cooldown_seconds:
                 return f"V:{volume_multiplier:.1f}x"
 
-        if volume_multiplier >= volume_alert_multiplier:
+        if evaluation.should_alert:
             coin = get_coin_display_name(self.config.symbol)
             first_price = self.volume_history[0].price
             price_change = current_price - first_price
@@ -446,8 +403,8 @@ class PriceMonitor:
                 current_price=current_price,
                 price_change_pct=price_change_pct,
                 volume_multiplier=volume_multiplier,
-                current_volume=current_volume,
-                avg_volume=avg_volume,
+                current_volume=evaluation.current_volume,
+                avg_volume=evaluation.avg_volume,
                 current_time=current_time,
             )
 
@@ -457,7 +414,7 @@ class PriceMonitor:
             def _log_sent() -> None:
                 logger.info(
                     f"[{coin}] 成交量异常: {volume_multiplier:.1f}x "
-                    f"(当前:{current_volume:,.0f}, 均值:{avg_volume:,.0f})"
+                    f"(当前:{evaluation.current_volume:,.0f}, 均值:{evaluation.avg_volume:,.0f})"
                 )
 
             self._send_notification(message, on_success=_log_sent)

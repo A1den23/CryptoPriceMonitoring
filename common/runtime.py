@@ -1,6 +1,82 @@
 """Small shared runtime helpers for bot and monitor lifecycle."""
 
+import asyncio
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
 import signal
+
+from .logging import logger
+from .utils import now_in_configured_timezone
+
+
+class HeartbeatWriter:
+    """Write a heartbeat file with optional minimum interval throttling."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        min_interval_seconds: float = 0.0,
+        label: str = "heartbeat",
+        clock: Callable[[], datetime] = now_in_configured_timezone,
+    ) -> None:
+        self.path = Path(path)
+        self.min_interval_seconds = min_interval_seconds
+        self.label = label
+        self.clock = clock
+        self.last_touch = None
+
+    def touch(self) -> None:
+        """Touch the heartbeat file if the throttle allows it."""
+        now = self.clock()
+        if self.last_touch is not None and self.min_interval_seconds > 0:
+            elapsed_seconds = (now - self.last_touch).total_seconds()
+            if elapsed_seconds < self.min_interval_seconds:
+                return
+
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.touch()
+            self.last_touch = now
+        except OSError as exc:
+            logger.warning(f"更新 {self.label} 心跳文件失败 '{self.path}': {exc}")
+
+
+class BackgroundTaskSet:
+    """Track and flush a set of background asyncio tasks."""
+
+    def __init__(self, *, cleanup_error_message: str | None = "清理后台任务失败: {exc}") -> None:
+        self.tasks: set[asyncio.Task] = set()
+        self.cleanup_error_message = cleanup_error_message
+
+    def track(self, task: asyncio.Task) -> asyncio.Task:
+        """Track *task* until completion and return it for callback chaining."""
+        self.tasks.add(task)
+        task.add_done_callback(self.discard)
+        return task
+
+    def discard(self, task: asyncio.Task) -> None:
+        """Remove a completed task from the tracked set."""
+        self.tasks.discard(task)
+
+    async def flush(self, *, cancel: bool = False) -> None:
+        """Await tracked tasks, optionally cancelling pending tasks first."""
+        while self.tasks:
+            pending_tasks = list(self.tasks)
+            if cancel:
+                for task in pending_tasks:
+                    if not task.done():
+                        task.cancel()
+
+            for task in pending_tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    if self.cleanup_error_message is not None:
+                        logger.error(self.cleanup_error_message.format(exc=exc))
 
 
 class SignalHandlerRegistry:

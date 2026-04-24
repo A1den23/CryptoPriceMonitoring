@@ -11,7 +11,12 @@ from common.clients.websocket import BinanceWebSocketClient
 from common.config import ConfigManager
 from common.logging import logger
 from common.notifications import TelegramNotifier
-from common.runtime import SignalHandlerRegistry, SignalHandlingMixin
+from common.runtime import (
+    BackgroundTaskSet,
+    HeartbeatWriter,
+    SignalHandlerRegistry,
+    SignalHandlingMixin,
+)
 from common.stablecoin_universe import (
     compute_next_stablecoin_universe_refresh_time,
     refresh_stablecoin_universe_from_config,
@@ -35,6 +40,8 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
     This class provides real-time price monitoring using Binance WebSocket streams,
     with automatic reconnection and connection health monitoring.
     """
+
+    SHUTDOWN_NOTIFICATION_TIMEOUT_SECONDS = 5.0
 
     def __init__(self, config: ConfigManager):
         self.config = config
@@ -61,9 +68,17 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
         self._signal_handlers_registered = False
         self._disconnect_alert_time: datetime | None = None
         self._last_disconnect_reason: str | None = None
-        self._notification_tasks: set[asyncio.Task] = set()
+        self._notification_task_set = BackgroundTaskSet(
+            cleanup_error_message="清理时通知任务失败: {exc}",
+        )
+        self._notification_tasks = self._notification_task_set.tasks
 
         self._heartbeat_file = Path(self.config.monitor_heartbeat_file)
+        self._heartbeat_writer = HeartbeatWriter(
+            self._heartbeat_file,
+            min_interval_seconds=1.0,
+            label="Monitor",
+        )
         self._last_heartbeat_touch: datetime | None = None
 
     def _load_monitors(self):
@@ -101,7 +116,15 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
             monitor_count=len(self.monitors),
         )
         try:
-            await asyncio.to_thread(self.notifier.send_message, message)
+            await asyncio.wait_for(
+                asyncio.to_thread(self.notifier.send_message, message),
+                timeout=self.SHUTDOWN_NOTIFICATION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "发送停机通知超时，"
+                f"已等待 {self.SHUTDOWN_NOTIFICATION_TIMEOUT_SECONDS:g}s"
+            )
         except Exception as e:
             logger.error(f"发送停机通知失败: {e}")
 
@@ -166,40 +189,20 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
 
     def _touch_heartbeat(self):
         """Touch heartbeat file to indicate monitor is actively receiving market updates."""
-        now = now_in_configured_timezone()
-        if self._last_heartbeat_touch and (now - self._last_heartbeat_touch).total_seconds() < 1:
-            return
-        try:
-            self._heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
-            self._heartbeat_file.touch()
-            self._last_heartbeat_touch = now
-        except OSError as e:
-            logger.warning(f"更新心跳文件失败 '{self._heartbeat_file}': {e}")
+        self._heartbeat_writer.touch()
+        self._last_heartbeat_touch = self._heartbeat_writer.last_touch
 
     def _track_notification_task(self, task: asyncio.Task) -> asyncio.Task:
         """Track a ws_monitor-owned notification task until completion."""
-        self._notification_tasks.add(task)
-        task.add_done_callback(self._discard_notification_task)
-        return task
+        return self._notification_task_set.track(task)
 
     def _discard_notification_task(self, task: asyncio.Task) -> None:
         """Remove a completed notification task from tracking."""
-        self._notification_tasks.discard(task)
+        self._notification_task_set.discard(task)
 
     async def _flush_notification_tasks(self) -> None:
         """Cancel and await ws_monitor-owned notification tasks during cleanup."""
-        while self._notification_tasks:
-            pending_tasks = list(self._notification_tasks)
-            for task in pending_tasks:
-                if not task.done():
-                    task.cancel()
-            for task in pending_tasks:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    logger.error(f"清理时通知任务失败: {exc}")
+        await self._notification_task_set.flush(cancel=True)
 
     async def _on_disconnect(self, reason: str) -> None:
         """Handle WebSocket disconnect event."""

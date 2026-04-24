@@ -147,6 +147,58 @@ class CoinConfig:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class TelegramSettings:
+    """Telegram connection settings."""
+
+    bot_token: str | None
+    chat_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSettings:
+    """Runtime heartbeat and loop settings."""
+
+    bot_heartbeat_file: str
+    bot_heartbeat_interval_seconds: float
+    monitor_heartbeat_file: str
+    check_interval: int
+    debug_mode: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WebSocketSettings:
+    """WebSocket connectivity settings."""
+
+    ping_interval_seconds: float
+    pong_timeout_seconds: float
+    message_timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class AlertCooldownSettings:
+    """Notification cooldown settings."""
+
+    volume_alert_cooldown_seconds: int
+    volatility_alert_cooldown_seconds: int
+    milestone_alert_cooldown_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class StablecoinSettings:
+    """Stablecoin monitor and universe refresh settings."""
+
+    depeg_monitor_enabled: bool
+    depeg_top_n: int
+    depeg_threshold_percent: float
+    depeg_poll_interval_seconds: int
+    depeg_alert_cooldown_seconds: int
+    universe_cache_path: str
+    universe_auto_refresh_enabled: bool
+    universe_refresh_hour: int
+    universe_refresh_minute: int
+
+
 class ConfigManager:
     """Centralized configuration management."""
 
@@ -224,6 +276,39 @@ class ConfigManager:
         # Get coin list from env or use default
         coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")
         self.coin_names = [coin.strip() for coin in coin_list.split(",") if coin.strip()]
+
+        self.telegram = TelegramSettings(
+            bot_token=self.telegram_bot_token,
+            chat_id=self.telegram_chat_id,
+        )
+        self.runtime = RuntimeSettings(
+            bot_heartbeat_file=self.bot_heartbeat_file,
+            bot_heartbeat_interval_seconds=self.bot_heartbeat_interval_seconds,
+            monitor_heartbeat_file=self.monitor_heartbeat_file,
+            check_interval=self.check_interval,
+            debug_mode=self.debug_mode,
+        )
+        self.websocket = WebSocketSettings(
+            ping_interval_seconds=self.ws_ping_interval_seconds,
+            pong_timeout_seconds=self.ws_pong_timeout_seconds,
+            message_timeout_seconds=self.ws_message_timeout_seconds,
+        )
+        self.alert_cooldowns = AlertCooldownSettings(
+            volume_alert_cooldown_seconds=self.volume_alert_cooldown_seconds,
+            volatility_alert_cooldown_seconds=self.volatility_alert_cooldown_seconds,
+            milestone_alert_cooldown_seconds=self.milestone_alert_cooldown_seconds,
+        )
+        self.stablecoin = StablecoinSettings(
+            depeg_monitor_enabled=self.stablecoin_depeg_monitor_enabled,
+            depeg_top_n=self.stablecoin_depeg_top_n,
+            depeg_threshold_percent=self.stablecoin_depeg_threshold_percent,
+            depeg_poll_interval_seconds=self.stablecoin_depeg_poll_interval_seconds,
+            depeg_alert_cooldown_seconds=self.stablecoin_depeg_alert_cooldown_seconds,
+            universe_cache_path=self.stablecoin_universe_cache_path,
+            universe_auto_refresh_enabled=self.stablecoin_universe_auto_refresh_enabled,
+            universe_refresh_hour=self.stablecoin_universe_refresh_hour,
+            universe_refresh_minute=self.stablecoin_universe_refresh_minute,
+        )
 
         # Load all coin configurations
         self.coins: dict[str, CoinConfig] = {}

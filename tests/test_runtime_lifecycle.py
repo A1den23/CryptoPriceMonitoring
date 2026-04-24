@@ -375,6 +375,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             return shutdown_task
 
         with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
+             patch.object(WebSocketMultiCoinMonitor, "SHUTDOWN_NOTIFICATION_TIMEOUT_SECONDS", 0.01), \
              patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
              patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
              patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
@@ -396,6 +397,26 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         ws_client.stop.assert_awaited_once_with()
         self.assertEqual(ws_monitor._notification_tasks, set())
+
+    async def test_send_shutdown_notification_times_out_when_notifier_hangs(self) -> None:
+        with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
+             patch("monitor.ws_monitor.TelegramNotifier"):
+            ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
+
+        notification_started = asyncio.Event()
+
+        async def pending_notification() -> bool:
+            notification_started.set()
+            await asyncio.Future()
+            return True
+
+        with patch.object(WebSocketMultiCoinMonitor, "SHUTDOWN_NOTIFICATION_TIMEOUT_SECONDS", 0.01), \
+             patch("monitor.ws_monitor.asyncio.to_thread", new=lambda *args, **kwargs: pending_notification()), \
+             patch("monitor.ws_monitor.logger.warning") as mock_warning:
+            await asyncio.wait_for(ws_monitor._send_shutdown_notification(), timeout=1)
+
+        self.assertTrue(notification_started.is_set())
+        mock_warning.assert_called_once()
 
     async def test_ws_monitor_run_cleans_up_pending_reconnect_notification_on_cancellation(self) -> None:
         ws_client = types.SimpleNamespace(

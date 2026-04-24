@@ -16,6 +16,14 @@ class BinanceAPIError(Exception):
     pass
 
 
+def _parse_price_payload(payload: dict, symbol: str) -> float:
+    """Parse a Binance ticker/price payload into a float price."""
+    try:
+        return float(payload["price"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BinanceAPIError(f"Invalid response format for {symbol}") from exc
+
+
 class BinancePriceFetcher:
     """Fetch prices from Binance API with retry mechanism"""
 
@@ -55,10 +63,10 @@ class BinancePriceFetcher:
             response = self.session.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
-            return float(data["price"])
+            return _parse_price_payload(data, symbol)
         except requests.exceptions.RequestException as e:
             self._handle_request_error(symbol, e)
-        except (KeyError, ValueError) as e:
+        except BinanceAPIError as e:
             self._handle_response_error(symbol, e)
 
     def close(self) -> None:
@@ -119,10 +127,10 @@ class AsyncBinancePriceFetcher:
             async with self.session.get(url, params=params) as response:
                 response.raise_for_status()
                 data = await response.json()
-                return float(data["price"])
+                return _parse_price_payload(data, symbol)
         except aiohttp.ClientError as e:
             await self._handle_request_error(symbol, e)
-        except (KeyError, ValueError) as e:
+        except BinanceAPIError as e:
             await self._handle_response_error(symbol, e)
         return None  # Unreachable due to raise, but satisfies type checker
 
