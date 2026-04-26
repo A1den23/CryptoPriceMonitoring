@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for Crypto Price Monitoring Bot
 # Stage 1: Builder - Compile dependencies
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
 # Set working directory
 WORKDIR /build
@@ -17,7 +17,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements.txt
 
 # Stage 2: Runtime - Minimal production image
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Set labels
 LABEL maintainer="Crypto Price Monitor"
