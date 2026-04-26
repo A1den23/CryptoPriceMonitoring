@@ -42,6 +42,9 @@ services:
     # 安全选项
     security_opt:
       - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
 
   # Telegram 交互 Bot 服务
   crypto-bot:
@@ -84,6 +87,9 @@ services:
     # 安全选项
     security_opt:
       - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
 
 networks:
   crypto-network:
