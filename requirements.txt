@@ -4,7 +4,7 @@ python-telegram-bot==20.7
 python-dotenv==1.1.0
 
 # Async HTTP client for concurrent requests
-aiohttp==3.11.18
+aiohttp==3.13.5
 
 # WebSocket client for real-time price streams
 websockets==12.0
