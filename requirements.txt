@@ -13,4 +13,4 @@ websockets==12.0
 tenacity==8.5.0
 
 # Type hints and data validation
-typing-extensions==4.13.4; python_version < "3.10"
+typing-extensions==4.15.0; python_version < "3.10"
