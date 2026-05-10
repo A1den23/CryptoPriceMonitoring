@@ -27,7 +27,10 @@ class FakeCallbackQueryHandler:
 class FakeApplication:
     def __init__(self) -> None:
         self.handlers = []
-        self.bot = types.SimpleNamespace(send_message=None)
+        self.bot = types.SimpleNamespace(
+            send_message=None,
+            set_my_commands=AsyncMock(),
+        )
         self.initialized = False
         self.running = False
         self.updater = types.SimpleNamespace(
@@ -275,6 +278,66 @@ class TelegramBotAppTests(unittest.TestCase):
 
         self.assertIs(callback_handlers[0].callback.__self__, telegram_bot)
         self.assertIs(callback_handlers[0].callback.__func__, bot_app.TelegramBot.button_callback)
+
+    def test_run_async_registers_telegram_command_menu(self) -> None:
+        application = FakeApplication()
+
+        class FakeApplicationModule:
+            @staticmethod
+            def builder():
+                return FakeApplicationBuilder(application)
+
+        config = types.SimpleNamespace(
+            telegram_bot_token="token",
+            telegram_chat_id="chat",
+            bot_heartbeat_file="/tmp/bot-heartbeat-test",
+            bot_heartbeat_interval_seconds=30.0,
+            get_enabled_coins=lambda: [],
+        )
+
+        async def fake_wait() -> None:
+            telegram_bot._shutdown_event.set()
+            return None
+
+        async def fake_heartbeat_loop() -> None:
+            await fake_wait()
+
+        class FakeFetcherContext:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+                return None
+
+        with patch.object(bot_app, "Application", FakeApplicationModule), \
+             patch.object(bot_app, "CommandHandler", FakeCommandHandler), \
+             patch.object(bot_app, "CallbackQueryHandler", FakeCallbackQueryHandler), \
+             patch.object(bot_app, "AsyncBinancePriceFetcher", return_value=FakeFetcherContext()), \
+             patch.object(bot_app, "now_in_configured_timezone", return_value=types.SimpleNamespace(strftime=lambda _fmt: "2026-03-25 10:30:45")), \
+             patch.object(bot_app.TelegramBot, "_touch_heartbeat", return_value=None), \
+             patch.object(bot_app.TelegramBot, "_heartbeat_loop", side_effect=fake_heartbeat_loop), \
+             patch.object(common_runtime.signal, "signal", side_effect=lambda signum, handler: handler):
+            telegram_bot = bot_app.TelegramBot(config)
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(telegram_bot.run_async())
+            finally:
+                loop.close()
+
+        application.bot.set_my_commands.assert_awaited_once()
+        registered_commands = application.bot.set_my_commands.await_args.args[0]
+        self.assertEqual(
+            [(command.command, command.description) for command in registered_commands],
+            [
+                ("start", "显示欢迎菜单和快捷按钮"),
+                ("help", "查看帮助说明"),
+                ("price", "查询指定币种价格"),
+                ("stablecoins", "查看前25稳定币价格"),
+                ("status", "查看所有监控币种状态"),
+                ("all", "查看所有已启用币种价格"),
+            ],
+        )
 
     def test_telegram_bot_uses_config_for_notifier_and_heartbeat_settings(self) -> None:
         application = FakeApplication()

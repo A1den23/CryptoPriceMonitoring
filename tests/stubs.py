@@ -141,7 +141,13 @@ def install_dependency_stubs() -> None:
             def __init__(self, keyboard) -> None:
                 self.keyboard = keyboard
 
+        class BotCommand:
+            def __init__(self, command: str, description: str) -> None:
+                self.command = command
+                self.description = description
+
         telegram.Update = Update
+        telegram.BotCommand = BotCommand
         telegram.InlineKeyboardButton = InlineKeyboardButton
         telegram.InlineKeyboardMarkup = InlineKeyboardMarkup
         sys.modules["telegram"] = telegram

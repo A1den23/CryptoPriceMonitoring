@@ -1727,6 +1727,7 @@ class TelegramBotRegressionTests(unittest.TestCase):
         heartbeat_task = FakeHeartbeatTask()
         allowed_updates = object()
         application = types.SimpleNamespace(
+            bot=types.SimpleNamespace(set_my_commands=AsyncMock()),
             initialize=AsyncMock(),
             start=AsyncMock(),
             stop=AsyncMock(),
@@ -1757,6 +1758,7 @@ class TelegramBotRegressionTests(unittest.TestCase):
         self.assertTrue(heartbeat_task.cancel_called)
         self.assertTrue(heartbeat_task.awaited)
         application.initialize.assert_awaited_once_with()
+        application.bot.set_my_commands.assert_awaited_once()
         application.start.assert_awaited_once_with()
         application.updater.start_polling.assert_awaited_once_with(
             drop_pending_updates=True,

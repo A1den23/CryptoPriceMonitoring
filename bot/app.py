@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from common.clients.defillama import DefiLlamaClient
@@ -29,6 +29,14 @@ class TelegramBot(SignalHandlingMixin):
     BOT_POOL_TIMEOUT_SECONDS = 30.0
     GET_UPDATES_CONNECTION_POOL_SIZE = 2
     GET_UPDATES_POOL_TIMEOUT_SECONDS = 30.0
+    BOT_COMMAND_MENU = (
+        ("start", "显示欢迎菜单和快捷按钮"),
+        ("help", "查看帮助说明"),
+        ("price", "查询指定币种价格"),
+        ("stablecoins", "查看前25稳定币价格"),
+        ("status", "查看所有监控币种状态"),
+        ("all", "查看所有已启用币种价格"),
+    )
 
     def __init__(self, config: ConfigManager):
         self.config = config
@@ -72,6 +80,12 @@ class TelegramBot(SignalHandlingMixin):
         self._heartbeat_writer = HeartbeatWriter(self._heartbeat_file, label="Bot")
 
         logger.info("Telegram Bot 初始化成功")
+
+    async def _register_bot_command_menu(self) -> None:
+        """Register commands shown by Telegram clients when users type '/'."""
+        await self.application.bot.set_my_commands(
+            [BotCommand(command, description) for command, description in self.BOT_COMMAND_MENU]
+        )
 
     def _touch_heartbeat(self) -> None:
         """Touch heartbeat file to indicate bot event loop is alive."""
@@ -243,6 +257,7 @@ class TelegramBot(SignalHandlingMixin):
                 self.fetcher = fetcher
                 await self.application.initialize()
                 initialized = True
+                await self._register_bot_command_menu()
                 await self.application.start()
                 started = True
                 await self.application.updater.start_polling(
