@@ -889,6 +889,22 @@ class DefiLlamaClientRegressionTests(unittest.TestCase):
         self.assertEqual(snapshots[0].symbol, "USDC")
         self.assertEqual(snapshots[0].rank, 1)
 
+    def test_defillama_client_skips_zero_price_entries(self) -> None:
+        from common.clients.defillama import DefiLlamaClient
+
+        payload = {
+            "peggedAssets": [
+                {"name": "Avalon USDa", "symbol": "USDA", "price": 0, "circulating": 3_000},
+                {"name": "USDC", "symbol": "USDC", "price": 1.0, "circulating": 2_000},
+            ]
+        }
+
+        client = DefiLlamaClient()
+        snapshots = client.parse_stablecoins(payload, top_n=5)
+
+        self.assertEqual([snapshot.symbol for snapshot in snapshots], ["USDC"])
+        self.assertEqual([snapshot.rank for snapshot in snapshots], [1])
+
     def test_defillama_client_parses_circulating_dict_from_live_payload_shape(self) -> None:
         from common.clients.defillama import DefiLlamaClient, StablecoinSnapshot
 

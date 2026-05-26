@@ -2,6 +2,7 @@
 DefiLlama client for stablecoin market snapshots.
 """
 
+import math
 from dataclasses import dataclass
 
 import aiohttp
@@ -74,6 +75,8 @@ class DefiLlamaClient:
                 parsed_price = float(price)
                 parsed_circulating = float(circulating_value)
             except (TypeError, ValueError):
+                continue
+            if not math.isfinite(parsed_price) or parsed_price <= 0:
                 continue
 
             parsed_symbol = str(symbol)
