@@ -1,7 +1,7 @@
 # Core dependencies
 requests==2.32.3
 python-telegram-bot==20.7
-python-dotenv==1.1.0
+python-dotenv==1.2.2
 
 # Async HTTP client for concurrent requests
 aiohttp==3.11.18
