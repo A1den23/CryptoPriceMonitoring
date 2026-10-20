@@ -274,7 +274,7 @@ class ConfigManager:
         )
 
         # Get coin list from env or use default
-        coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,USD1")
+        coin_list = os.getenv("COIN_LIST", "BTC,ETH,SOL,HYPE,USD1")
         self.coin_names = [coin.strip() for coin in coin_list.split(",") if coin.strip()]
 
         self.telegram = TelegramSettings(

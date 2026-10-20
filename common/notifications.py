@@ -33,7 +33,7 @@ class TelegramNotifier:
         self._message_times: deque[float] = deque()
         self._rate_limit = 20  # messages
         self._rate_window = 60  # seconds
-        self._rate_limit_lock = threading.Lock()
+        self._rate_limit_condition = threading.Condition()
 
         if not self.bot_token or not self.chat_id:
             logger.warning("Telegram bot_token 或 chat_id 未配置")
@@ -52,23 +52,29 @@ class TelegramNotifier:
         while self._message_times and self._message_times[0] < now - self._rate_window:
             self._message_times.popleft()
 
-    def _reserve_rate_limit_slot(self) -> float | None:
-        """Reserve a send slot atomically so concurrent sends honor the limit."""
-        now = time.time()
-        with self._rate_limit_lock:
-            self._prune_rate_limit_window(now)
-            if len(self._message_times) >= self._rate_limit:
-                return None
-            self._message_times.append(now)
-            return now
-
     def _release_rate_limit_slot(self, reserved_at: float) -> None:
         """Release a reserved slot when the request fails."""
-        with self._rate_limit_lock:
+        with self._rate_limit_condition:
             try:
                 self._message_times.remove(reserved_at)
             except ValueError:
                 pass
+            self._rate_limit_condition.notify()
+
+    def _wait_for_rate_limit_slot(self) -> float:
+        """Wait for a send slot instead of silently dropping an alert."""
+        with self._rate_limit_condition:
+            while True:
+                now = time.time()
+                self._prune_rate_limit_window(now)
+                if len(self._message_times) < self._rate_limit:
+                    self._message_times.append(now)
+                    return now
+                wait_seconds = max(
+                    self._message_times[0] + self._rate_window - now,
+                    0.1,
+                )
+                self._rate_limit_condition.wait(wait_seconds)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -82,11 +88,7 @@ class TelegramNotifier:
             logger.error("Telegram bot_token 或 chat_id 未配置")
             return False
 
-        # Check rate limit
-        reserved_at = self._reserve_rate_limit_slot()
-        if reserved_at is None:
-            logger.warning("Telegram 发送频率超限，丢弃消息")
-            return False
+        reserved_at = self._wait_for_rate_limit_slot()
 
         url = self._build_api_url("sendMessage")
         data = {

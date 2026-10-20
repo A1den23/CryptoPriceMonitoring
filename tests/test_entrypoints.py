@@ -379,11 +379,11 @@ class EntrypointImportContractTests(unittest.TestCase):
         self.assertEqual(exit_context.exception.code, 0)
 
     def test_docs_keep_primary_entrypoints_while_runtime_uses_startup_wrapper(self) -> None:
-        readme = (REPO_ROOT / "README.md").read_text()
-        deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text()
-        dockerfile = (REPO_ROOT / "Dockerfile").read_text()
-        compose = (REPO_ROOT / "docker-compose.yml").read_text()
-        healthcheck_script = (REPO_ROOT / "scripts" / "healthcheck.py").read_text()
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        healthcheck_script = (REPO_ROOT / "scripts" / "healthcheck.py").read_text(encoding="utf-8")
 
         self.assertIn(PRIMARY_MONITOR_ENTRYPOINT, readme)
         self.assertIn(PRIMARY_BOT_ENTRYPOINT, readme)

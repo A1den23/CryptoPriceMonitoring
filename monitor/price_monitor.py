@@ -152,22 +152,38 @@ class PriceMonitor:
         """Wait for any queued notification tasks to finish."""
         await self._notification_task_set.flush()
 
-    def _send_notification(self, message: str, on_success: Callable[[], None] | None = None) -> bool:
+    def _send_notification(
+        self,
+        message: str,
+        on_success: Callable[[], None] | None = None,
+        on_failure: Callable[[], None] | None = None,
+    ) -> bool:
         """Send notification without blocking the event loop."""
-        def _handle_success(sent: bool) -> bool:
-            if sent and on_success is not None:
-                on_success()
+        def _handle_result(sent: bool) -> bool:
+            callback = on_success if sent else on_failure
+            if callback is not None:
+                callback()
             return sent
 
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            sent = self.notifier.send_message(message)
-            return _handle_success(sent)
+            try:
+                sent = self.notifier.send_message(message)
+            except Exception:
+                if on_failure is not None:
+                    on_failure()
+                raise
+            return _handle_result(sent)
 
         async def _send_async() -> bool:
-            sent = await asyncio.to_thread(self.notifier.send_message, message)
-            return _handle_success(sent)
+            try:
+                sent = await asyncio.to_thread(self.notifier.send_message, message)
+            except Exception:
+                if on_failure is not None:
+                    on_failure()
+                raise
+            return _handle_result(sent)
 
         task = self._notification_task_set.track(loop.create_task(_send_async()))
         task.add_done_callback(self._on_notification_done)
@@ -182,8 +198,9 @@ class PriceMonitor:
 
         now = now_in_configured_timezone()
 
-        # Set cooldown immediately to prevent duplicate notifications from
-        # rapid WebSocket updates arriving before the async send completes.
+        previous_milestone_time = self.last_milestone_notification_time
+
+        # Reserve the cooldown while the async send is in flight.
         self.last_price = current_price
         self.last_milestone_notification_time = now
 
@@ -198,7 +215,10 @@ class PriceMonitor:
             milestone_str = format_threshold(current_milestone)
             logger.info(f"[{coin}] 里程碑突破: {milestone_str}")
 
-        self._send_notification(message, on_success=_log_sent)
+        def _rollback() -> None:
+            self.last_milestone_notification_time = previous_milestone_time
+
+        self._send_notification(message, on_success=_log_sent, on_failure=_rollback)
 
     def check_integer_milestone(self, current_price: float, _now: datetime | None = None) -> bool:
         """Check if price reached an integer milestone using crossing detection."""
@@ -321,13 +341,18 @@ class PriceMonitor:
             .replace("加速度", "acceleration")
         )
 
-        # Set cooldown immediately to prevent duplicate notifications.
+        previous_alert_time = self.last_volatility_notification_time
+
+        # Reserve the cooldown while the async send is in flight.
         self.last_volatility_notification_time = current_time
 
         def _log_sent() -> None:
             logger.info(f"[{coin}] 检测到高波动 - {log_reasons}")
 
-        self._send_notification(message, on_success=_log_sent)
+        def _rollback() -> None:
+            self.last_volatility_notification_time = previous_alert_time
+
+        self._send_notification(message, on_success=_log_sent, on_failure=_rollback)
 
     def check_volatility(self, current_price: float, _now: datetime | None = None) -> str | None:
         """Check price history for volatility thresholds."""
@@ -408,7 +433,9 @@ class PriceMonitor:
                 current_time=current_time,
             )
 
-            # Set cooldown immediately to prevent duplicate notifications.
+            previous_alert_time = self.last_volume_alert_time
+
+            # Reserve the cooldown while the async send is in flight.
             self.last_volume_alert_time = current_time
 
             def _log_sent() -> None:
@@ -417,7 +444,10 @@ class PriceMonitor:
                     f"(当前:{evaluation.current_volume:,.0f}, 均值:{evaluation.avg_volume:,.0f})"
                 )
 
-            self._send_notification(message, on_success=_log_sent)
+            def _rollback() -> None:
+                self.last_volume_alert_time = previous_alert_time
+
+            self._send_notification(message, on_success=_log_sent, on_failure=_rollback)
             return f"V:{volume_multiplier:.1f}x🚨"
 
         return f"V:{volume_multiplier:.1f}x"

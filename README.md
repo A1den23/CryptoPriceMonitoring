@@ -118,7 +118,7 @@ docker compose down
 | `DEBUG` | 是否开启调试 | `false` |
 | `LOG_LEVEL` | 日志级别（`DEBUG/INFO/WARNING/ERROR`） | `INFO` |
 | `TIMEZONE` | 时区（如 `Asia/Shanghai`, `UTC`, `America/New_York`） | `Asia/Shanghai` |
-| `COIN_LIST` | 逗号分隔的币种名 | `BTC,ETH,SOL,USD1` |
+| `COIN_LIST` | 逗号分隔的币种名 | `BTC,ETH,SOL,HYPE,USD1` |
 | `MILESTONE_ALERT_COOLDOWN_SECONDS` | 里程碑告警冷却（秒） | 600 |
 | `VOLATILITY_ALERT_COOLDOWN_SECONDS` | 波动告警冷却（秒） | 60 |
 | `VOLUME_ALERT_COOLDOWN_SECONDS` | 成交量告警冷却（秒） | 5 |
@@ -154,7 +154,7 @@ docker compose down
 示例：
 
 ```env
-COIN_LIST=BTC,ETH,SOL,USD1
+COIN_LIST=BTC,ETH,SOL,HYPE,USD1
 
 BTC_ENABLED=true
 BTC_SYMBOL=BTCUSDT
@@ -162,6 +162,17 @@ BTC_INTEGER_THRESHOLD=1000
 BTC_VOLATILITY_PERCENT=5.0
 BTC_VOLATILITY_WINDOW_SECONDS=180
 BTC_VOLUME_ALERT_MULTIPLIER=10.0
+```
+
+HYPE 使用币安现货交易对 `HYPEUSDT`：
+
+```env
+HYPE_ENABLED=true
+HYPE_SYMBOL=HYPEUSDT
+HYPE_INTEGER_THRESHOLD=5
+HYPE_VOLATILITY_PERCENT=7.0
+HYPE_VOLATILITY_WINDOW_SECONDS=180
+HYPE_VOLUME_ALERT_MULTIPLIER=50.0
 ```
 
 ## 告警触发逻辑（精简版）
@@ -302,8 +313,9 @@ docker compose exec crypto-bot bash
   - `TelegramNotifier` 现在要求 Telegram API 显式返回 `ok=true` 才视为发送成功
   - 对 malformed JSON、缺少 `ok`、`ok=false` 的响应会明确返回失败，不再误判为成功
   - `test_connection()` 不再把可能带 token 的异常文本写入日志
+  - 每分钟超过 20 条时会等待配额，不再静默丢弃告警
 - **告警状态语义**：
-  - `PriceMonitor` 的里程碑 / 波动 / 成交量告警状态只在发送成功后推进
+  - `PriceMonitor` 发送期间保留冷却防重复，失败后释放冷却并允许后续行情重试
   - `StablecoinDepegMonitor` 的 `last_alert_time` 与 `alerts` 只在真实发送成功后更新
 - **生命周期与停机**：
   - 优雅停机时会 drain 未完成的通知任务

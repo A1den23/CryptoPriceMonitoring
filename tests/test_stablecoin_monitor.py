@@ -57,7 +57,7 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
                 # Do NOT call _mark_alert_sent when send fails
                 pass
 
-        state = stablecoin_monitor._states["USDC"]
+        state = stablecoin_monitor._states[("USDC", "USDC")]
         self.assertTrue(state.is_depegged)
         self.assertIsNone(state.last_alert_time)
         notifier.send_message.assert_called_once()
@@ -85,7 +85,7 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
             mock_to_thread.side_effect = invoke
             alerts = asyncio.run(stablecoin_monitor.run_once())
 
-        state = stablecoin_monitor._states["USDC"]
+        state = stablecoin_monitor._states[("USDC", "USDC")]
         self.assertEqual(alerts, 0)
         self.assertTrue(state.is_depegged)
         self.assertIsNone(state.last_alert_time)
@@ -115,11 +115,27 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
             mock_to_thread.side_effect = invoke
             alerts = asyncio.run(stablecoin_monitor.run_once())
 
-        state = stablecoin_monitor._states["USDC"]
+        state = stablecoin_monitor._states[("USDC", "USDC")]
         self.assertEqual(alerts, 1)
         self.assertEqual(state.last_alert_time, start_time)
         mock_to_thread.assert_awaited_once()
         notifier.send_message.assert_called_once()
+
+    def test_stablecoins_with_same_symbol_keep_separate_alert_state(self) -> None:
+        first = StablecoinSnapshot("First Dollar", "USDX", 0.94, 1000.0, 1)
+        second = StablecoinSnapshot("Second Dollar", "USDX", 0.94, 900.0, 2)
+        notifier = types.SimpleNamespace(send_message=Mock(return_value=True))
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier)
+        start_time = datetime(2026, 3, 24, tzinfo=timezone.utc)
+        clock = FakeClock(start_time)
+
+        with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now):
+            self.assertIsNotNone(stablecoin_monitor._build_alert_message(first))
+            stablecoin_monitor._mark_alert_sent(first, start_time)
+            self.assertIsNotNone(stablecoin_monitor._build_alert_message(second))
+
+        self.assertIn(("USDX", "First Dollar"), stablecoin_monitor._states)
+        self.assertIn(("USDX", "Second Dollar"), stablecoin_monitor._states)
 
 
 if __name__ == "__main__":

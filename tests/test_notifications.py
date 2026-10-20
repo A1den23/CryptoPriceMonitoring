@@ -1,5 +1,6 @@
 import logging
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -18,6 +19,26 @@ from common.notifications import TelegramNotifier
 
 
 class TelegramNotifierTests(unittest.TestCase):
+    def test_rate_limited_send_waits_instead_of_dropping_alert(self) -> None:
+        notifier = TelegramNotifier(bot_token="token", chat_id="chat")
+        notifier._rate_limit = 1
+        notifier._message_times.append(100.0)
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"ok": True}
+        completed = threading.Event()
+
+        def fake_time() -> float:
+            return 100.0 if not completed.is_set() else 161.0
+
+        def release_wait(*_args, **_kwargs) -> None:
+            completed.set()
+
+        with patch("common.notifications.time.time", side_effect=fake_time), \
+             patch.object(notifier._rate_limit_condition, "wait", side_effect=release_wait), \
+             patch.object(notifier.session, "post", return_value=response):
+            self.assertTrue(notifier.send_message("hello"))
+
     def test_close_closes_underlying_http_session(self) -> None:
         notifier = TelegramNotifier(bot_token="token", chat_id="chat")
 

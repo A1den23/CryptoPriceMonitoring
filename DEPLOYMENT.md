@@ -261,6 +261,9 @@ docker compose logs --tail=200 crypto-monitor
 docker compose logs --tail=200 crypto-bot
 ```
 
+发送异常或 Telegram 返回失败时，行情告警不会保留失败的冷却状态，
+后续行情仍会重试；每分钟超过 20 条时会等待额度，不再静默丢弃。
+
 重点检查：
 
 - `TELEGRAM_BOT_TOKEN` 是否正确

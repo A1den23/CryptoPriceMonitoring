@@ -30,7 +30,7 @@ class StablecoinDepegMonitor:
         self.cooldown_seconds = config.stablecoin_depeg_alert_cooldown_seconds
         self.cache_path = config.stablecoin_universe_cache_path
         self.poll_interval_seconds = config.stablecoin_depeg_poll_interval_seconds
-        self._states: dict[str, StablecoinAlertState] = {}
+        self._states: dict[tuple[str, str], StablecoinAlertState] = {}
 
     def _deviation_percent(self, price: float) -> float:
         return (price - 1.0) * 100
@@ -58,8 +58,12 @@ class StablecoinDepegMonitor:
             return True
         return (now - state.last_alert_time).total_seconds() >= self.cooldown_seconds
 
+    @staticmethod
+    def _state_key(snapshot: StablecoinSnapshot) -> tuple[str, str]:
+        return snapshot.symbol, snapshot.name
+
     def _build_alert_message(self, snapshot: StablecoinSnapshot) -> tuple[str, datetime] | None:
-        state = self._states.setdefault(snapshot.symbol, StablecoinAlertState())
+        state = self._states.setdefault(self._state_key(snapshot), StablecoinAlertState())
         if not self._is_depegged(snapshot.price):
             state.is_depegged = False
             return None
@@ -74,8 +78,8 @@ class StablecoinDepegMonitor:
         state.is_depegged = True
         return message, now
 
-    def _mark_alert_sent(self, symbol: str, alert_time: datetime) -> None:
-        state = self._states.setdefault(symbol, StablecoinAlertState())
+    def _mark_alert_sent(self, snapshot: StablecoinSnapshot, alert_time: datetime) -> None:
+        state = self._states.setdefault(self._state_key(snapshot), StablecoinAlertState())
         state.is_depegged = True
         state.last_alert_time = alert_time
 
@@ -96,7 +100,7 @@ class StablecoinDepegMonitor:
             sent = await self._send_alert(message)
             if not sent:
                 continue
-            self._mark_alert_sent(snapshot.symbol, alert_time)
+            self._mark_alert_sent(snapshot, alert_time)
             alerts += 1
         logger.info(f"稳定币轮询完成: snapshots={len(snapshots)}, alerts={alerts}")
         return alerts

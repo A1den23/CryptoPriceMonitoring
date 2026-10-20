@@ -90,6 +90,7 @@ def get_coin_emoji(coin_name: str) -> str:
         "BTC": "₿",       # Bitcoin
         "ETH": "Ξ",       # Ethereum
         "SOL": "◎",       # Solana
+        "HYPE": "⚡",      # Hyperliquid
         "USD1": "$1",     # USD1 stablecoin
         "USDT": "₮",      # Tether
         "USDC": "₮",      # USD Coin

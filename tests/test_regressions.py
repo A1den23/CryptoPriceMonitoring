@@ -426,7 +426,7 @@ class PriceMonitorRegressionTests(unittest.TestCase):
         self.assertIn("📊", outputs[-1])
         self.assertEqual(self._count_messages(notifier, "波动警报"), 1)
 
-    def test_milestone_send_failure_advances_cooldown_to_prevent_duplicate(self) -> None:
+    def test_milestone_send_failure_releases_cooldown_for_retry(self) -> None:
         class FailingNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 raise RuntimeError("telegram unavailable")
@@ -447,11 +447,10 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        # Cooldown is set BEFORE send to prevent duplicate notifications (race condition fix).
         self.assertEqual(price_monitor.last_price, 101_000.0)
-        self.assertEqual(price_monitor.last_milestone_notification_time, current_time)
+        self.assertIsNone(price_monitor.last_milestone_notification_time)
 
-    def test_volatility_send_failure_advances_cooldown_to_prevent_duplicate(self) -> None:
+    def test_volatility_send_failure_releases_cooldown_for_retry(self) -> None:
         class FailingNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 raise RuntimeError("telegram unavailable")
@@ -477,10 +476,9 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        # Cooldown is set BEFORE send to prevent duplicate notifications.
-        self.assertEqual(price_monitor.last_volatility_notification_time, current_time)
+        self.assertIsNone(price_monitor.last_volatility_notification_time)
 
-    def test_volume_send_failure_advances_cooldown_to_prevent_duplicate(self) -> None:
+    def test_volume_send_failure_releases_cooldown_for_retry(self) -> None:
         class FailingNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 raise RuntimeError("telegram unavailable")
@@ -506,10 +504,9 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        # Cooldown is set BEFORE send to prevent duplicate notifications.
-        self.assertEqual(price_monitor.last_volume_alert_time, current_time)
+        self.assertIsNone(price_monitor.last_volume_alert_time)
 
-    def test_milestone_false_send_result_advances_cooldown_to_prevent_duplicate(self) -> None:
+    def test_milestone_false_send_result_releases_cooldown_for_retry(self) -> None:
         class FalseNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 return False
@@ -530,11 +527,10 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        # Cooldown is set BEFORE send to prevent duplicate notifications.
         self.assertEqual(price_monitor.last_price, 101_000.0)
-        self.assertEqual(price_monitor.last_milestone_notification_time, current_time)
+        self.assertIsNone(price_monitor.last_milestone_notification_time)
 
-    def test_volatility_false_send_result_advances_cooldown_to_prevent_duplicate(self) -> None:
+    def test_volatility_false_send_result_releases_cooldown_for_retry(self) -> None:
         class FalseNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 return False
@@ -560,10 +556,9 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        # Cooldown is set BEFORE send to prevent duplicate notifications.
-        self.assertEqual(price_monitor.last_volatility_notification_time, current_time)
+        self.assertIsNone(price_monitor.last_volatility_notification_time)
 
-    def test_volume_false_send_result_advances_cooldown_to_prevent_duplicate(self) -> None:
+    def test_volume_false_send_result_releases_cooldown_for_retry(self) -> None:
         class FalseNotifier(StubNotifier):
             def send_message(self, message: str) -> bool:
                 return False
@@ -589,8 +584,7 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        # Cooldown is set BEFORE send to prevent duplicate notifications.
-        self.assertEqual(price_monitor.last_volume_alert_time, current_time)
+        self.assertIsNone(price_monitor.last_volume_alert_time)
 
 
 class AlertMessagePresenterRegressionTests(unittest.TestCase):
@@ -802,6 +796,13 @@ class ConfigManagerRegressionTests(unittest.TestCase):
         self.assertTrue(config.stablecoin_universe_auto_refresh_enabled)
         self.assertEqual(config.stablecoin_universe_refresh_hour, 2)
         self.assertEqual(config.stablecoin_universe_refresh_minute, 0)
+
+    def test_config_manager_includes_hype_in_default_coin_list(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch("common.config.load_environment"):
+            config = ConfigManager()
+
+        self.assertIn("HYPE", config.coin_names)
+        self.assertIn("HYPE", config.coins)
 
     def test_config_manager_reads_runtime_notification_and_heartbeat_settings(self) -> None:
         with patch.dict(
@@ -1084,7 +1085,7 @@ class StablecoinDepegMonitorRegressionTests(unittest.TestCase):
         message, alert_time = alert
         sent = monitor.notifier.send_message(message)
         if sent:
-            monitor._mark_alert_sent(snapshot.symbol, alert_time)
+            monitor._mark_alert_sent(snapshot, alert_time)
         return sent
 
     def test_stablecoin_monitor_does_not_alert_within_threshold(self) -> None:
@@ -1621,10 +1622,12 @@ class TelegramNotifierRegressionTests(unittest.TestCase):
         mock_post.assert_called_once()
         self.assertIn("/bottoken/sendMessage", mock_post.call_args.args[0])
 
-    def test_rate_limit_slots_are_reserved_atomically(self) -> None:
+    def test_rate_limited_sends_wait_without_exceeding_the_limit(self) -> None:
         notifier = TelegramNotifier(bot_token="token", chat_id="chat")
         notifier._rate_limit = 1
+        notifier._rate_window = 1
         results: list[bool] = []
+        post_times: list[float] = []
         post_call_count = 0
         counter_lock = threading.Lock()
 
@@ -1632,6 +1635,7 @@ class TelegramNotifierRegressionTests(unittest.TestCase):
             nonlocal post_call_count
             with counter_lock:
                 post_call_count += 1
+                post_times.append(time.time())
             time.sleep(0.05)
             return DummyResponse()
 
@@ -1646,8 +1650,9 @@ class TelegramNotifierRegressionTests(unittest.TestCase):
             for thread in threads:
                 thread.join()
 
-        self.assertEqual(sorted(results), [False, True])
-        self.assertEqual(post_call_count, 1)
+        self.assertEqual(results, [True, True])
+        self.assertEqual(post_call_count, 2)
+        self.assertGreaterEqual(post_times[1] - post_times[0], notifier._rate_window * 0.95)
 
     def test_repr_redacts_token(self) -> None:
         notifier = TelegramNotifier(bot_token="secret123", chat_id="chat")
@@ -2100,7 +2105,7 @@ class MainEntrypointRegressionTests(unittest.TestCase):
 
 class EnvExampleRegressionTests(unittest.TestCase):
     def test_env_example_includes_stablecoin_depeg_settings(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+        content = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
 
         self.assertIn("STABLECOIN_DEPEG_MONITOR_ENABLED=", content)
         self.assertIn("STABLECOIN_DEPEG_TOP_N=25", content)
@@ -2112,14 +2117,14 @@ class EnvExampleRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_UNIVERSE_REFRESH_MINUTE=0", content)
 
     def test_env_example_documents_stablecoin_universe_cache_path(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+        content = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
 
         self.assertIn("STABLECOIN_UNIVERSE_CACHE_PATH=/app/data/stablecoin_top25.json", content)
 
 
 class StablecoinDocumentationRegressionTests(unittest.TestCase):
     def test_deployment_doc_includes_stablecoin_depeg_settings(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text()
+        content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text(encoding="utf-8")
 
         self.assertIn("STABLECOIN_DEPEG_MONITOR_ENABLED=", content)
         self.assertIn("STABLECOIN_DEPEG_TOP_N=25", content)
@@ -2131,7 +2136,7 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_UNIVERSE_REFRESH_MINUTE=0", content)
 
     def test_deployment_doc_documents_stablecoin_universe_refresh_workflow(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text()
+        content = (Path(__file__).resolve().parents[1] / "DEPLOYMENT.md").read_text(encoding="utf-8")
 
         self.assertIn("STABLECOIN_UNIVERSE_CACHE_PATH", content)
         self.assertIn("python -m common.stablecoin_universe refresh", content)
@@ -2146,7 +2151,7 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertNotIn("仍建议通过每天 `0 2 * * *` 的 cron 做后续日常刷新", content)
 
     def test_readme_describes_stablecoin_threshold_as_configurable(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        content = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
         self.assertIn("| `STABLECOIN_DEPEG_MONITOR_ENABLED` | 是否启用稳定币脱锚监控 | `true` |", content)
         self.assertIn("| `STABLECOIN_DEPEG_TOP_N` | 监控市值前 N 个稳定币 | `25` |", content)
@@ -2156,7 +2161,7 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
         self.assertIn("STABLECOIN_DEPEG_THRESHOLD_PERCENT", content)
 
     def test_readme_documents_timezone_fallback_as_fixed_offset_approximation(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        content = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
         self.assertIn("TIMEZONE", content)
         self.assertIn("fixed-offset fallback", content)
@@ -2165,8 +2170,8 @@ class StablecoinDocumentationRegressionTests(unittest.TestCase):
 
 class DockerRegressionTests(unittest.TestCase):
     def test_dockerfile_uses_heartbeat_healthcheck(self) -> None:
-        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
-        healthcheck = (Path(__file__).resolve().parents[1] / "scripts" / "healthcheck.py").read_text()
+        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        healthcheck = (Path(__file__).resolve().parents[1] / "scripts" / "healthcheck.py").read_text(encoding="utf-8")
 
         self.assertIn("scripts/healthcheck.py", dockerfile)
         self.assertIn("/proc/1/cmdline", healthcheck)
