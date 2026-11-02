@@ -9,7 +9,7 @@ from pathlib import Path
 from common.clients.defillama import DefiLlamaClient
 from common.clients.websocket import BinanceWebSocketClient
 from common.config import ConfigManager
-from common.logging import logger
+from common.logging import logger, safe_exception_text
 from common.notifications import TelegramNotifier
 from common.runtime import (
     BackgroundTaskSet,
@@ -126,7 +126,7 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
                 f"已等待 {self.SHUTDOWN_NOTIFICATION_TIMEOUT_SECONDS:g}s"
             )
         except Exception as e:
-            logger.error(f"发送停机通知失败: {e}")
+            logger.error(f"发送停机通知失败: {safe_exception_text(e)}")
 
     async def _flush_monitor_notifications(self) -> None:
         """Wait for all monitor notification tasks during graceful shutdown."""
@@ -229,7 +229,7 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
             return
         err = task.exception()
         if err:
-            logger.error(f"断开告警投递失败: {err}")
+            logger.error(f"断开告警投递失败: {safe_exception_text(err)}")
         else:
             logger.info(f"断开告警已发送: {task.result()}")
 
@@ -247,7 +247,7 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
             return
         err = task.exception()
         if err:
-            logger.error(f"重连告警投递失败: {err}")
+            logger.error(f"重连告警投递失败: {safe_exception_text(err)}")
         else:
             logger.info(f"重连告警已发送: {task.result()}")
 
@@ -330,7 +330,7 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
                 logger.error("没有启用任何币种。请至少设置一个 *_ENABLED=true")
                 return
 
-            if not self.notifier.test_connection():
+            if not await asyncio.to_thread(self.notifier.test_connection):
                 logger.warning("测试消息发送失败，请检查 Telegram 配置")
 
             symbols = list(self.monitors.keys())
@@ -437,7 +437,10 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
             should_notify_shutdown = False
             if self.ws_client:
                 await self.ws_client.stop()
-            await asyncio.to_thread(self.notifier.send_message, "👋 加密货币价格监控已停止")
+            try:
+                await asyncio.to_thread(self.notifier.send_message, "👋 加密货币价格监控已停止")
+            except Exception as e:
+                logger.error(f"发送停机通知失败: {safe_exception_text(e)}")
         except asyncio.CancelledError as exc:
             cancellation_error = exc
             logger.info("WebSocket 监控被上层取消，正在执行优雅清理...")

@@ -51,6 +51,19 @@ class StablecoinDepegMonitor:
             f"⏱️ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
+    def _format_recovery_message(self, snapshot: StablecoinSnapshot, deviation_percent: float, timestamp: datetime) -> str:
+        safe_symbol = escape(snapshot.symbol)
+        safe_name = escape(snapshot.name)
+        return (
+            f"✅【稳定币恢复通知】✅\n"
+            f"🪙 {safe_symbol} ({safe_name})\n"
+            f"🏅 排名: #{snapshot.rank}\n"
+            f"💰 当前价格: ${snapshot.price:.3f}\n"
+            f"📉 偏离 $1: {deviation_percent:+.2f}%\n"
+            f"⚠️ 阈值: ±{self.threshold_percent:.2f}%\n"
+            f"⏱️ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
     def _should_alert(self, state: StablecoinAlertState, now: datetime) -> bool:
         if not state.is_depegged:
             return True
@@ -62,10 +75,27 @@ class StablecoinDepegMonitor:
     def _state_key(snapshot: StablecoinSnapshot) -> tuple[str, str]:
         return snapshot.symbol, snapshot.name
 
+    def _build_recovery_message(self, snapshot: StablecoinSnapshot) -> str | None:
+        state = self._states.get(self._state_key(snapshot))
+        if state is None or not state.is_depegged or state.last_alert_time is None:
+            return None
+        if self._is_depegged(snapshot.price):
+            return None
+        return self._format_recovery_message(
+            snapshot,
+            self._deviation_percent(snapshot.price),
+            now_in_configured_timezone(),
+        )
+
+    def _mark_recovered(self, snapshot: StablecoinSnapshot) -> None:
+        state = self._states.setdefault(self._state_key(snapshot), StablecoinAlertState())
+        state.is_depegged = False
+        state.last_alert_time = None
+
     def _build_alert_message(self, snapshot: StablecoinSnapshot) -> tuple[str, datetime] | None:
         state = self._states.setdefault(self._state_key(snapshot), StablecoinAlertState())
         if not self._is_depegged(snapshot.price):
-            state.is_depegged = False
+            self._mark_recovered(snapshot)
             return None
 
         now = now_in_configured_timezone()
@@ -86,6 +116,13 @@ class StablecoinDepegMonitor:
     async def _send_alert(self, message: str) -> bool:
         return await asyncio.to_thread(self.notifier.send_message, message)
 
+    async def _deliver(self, snapshot: StablecoinSnapshot, message: str, label: str) -> bool:
+        try:
+            return bool(await self._send_alert(message))
+        except Exception as exc:
+            logger.error(f"[{snapshot.symbol}] 稳定币{label}发送失败: {type(exc).__name__}")
+            return False
+
     async def run_once(self) -> int:
         snapshots = await resolve_live_snapshots_for_cached_universe(
             self.client,
@@ -93,16 +130,17 @@ class StablecoinDepegMonitor:
         )
         alerts = 0
         for snapshot in snapshots:
+            recovery_message = self._build_recovery_message(snapshot)
+            if recovery_message is not None:
+                if await self._deliver(snapshot, recovery_message, "恢复通知"):
+                    self._mark_recovered(snapshot)
+                    logger.info(f"[{snapshot.symbol}] 稳定币恢复通知已发送")
+                continue
             alert = self._build_alert_message(snapshot)
             if alert is None:
                 continue
             message, alert_time = alert
-            try:
-                sent = await self._send_alert(message)
-            except Exception as exc:
-                logger.error(f"[{snapshot.symbol}] 稳定币告警发送失败: {type(exc).__name__}")
-                continue
-            if not sent:
+            if not await self._deliver(snapshot, message, "告警"):
                 continue
             self._mark_alert_sent(snapshot, alert_time)
             alerts += 1

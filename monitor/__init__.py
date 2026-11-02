@@ -24,6 +24,7 @@ from common import (
     now_in_configured_timezone,
     setup_logging,
 )
+from common.logging import safe_exception_text
 
 __all__ = [
     "BinanceWebSocketClient",
@@ -128,7 +129,7 @@ def test_volatility_alert():
                         notifier.send_message(message)
                         print("  ✓ 测试告警已发送!\n")
                 except Exception as e:
-                    logger.error(f"测试 {coin_config.coin_name} 时出错: {e}")
+                    logger.error(f"测试 {coin_config.coin_name} 时出错: {safe_exception_text(e)}")
 
         print("测试完成! 请检查 Telegram 中的测试告警。\n")
     finally:

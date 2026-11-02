@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import signal
 
-from .logging import logger
+from .logging import logger, safe_exception_text
 from .utils import now_in_configured_timezone
 
 
@@ -76,7 +76,9 @@ class BackgroundTaskSet:
                     pass
                 except Exception as exc:
                     if self.cleanup_error_message is not None:
-                        logger.error(self.cleanup_error_message.format(exc=exc))
+                        logger.error(
+                            self.cleanup_error_message.format(exc=safe_exception_text(exc))
+                        )
 
 
 class SignalHandlerRegistry:

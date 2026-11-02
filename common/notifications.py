@@ -7,7 +7,6 @@ import time
 from collections import deque
 
 import requests
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .logging import logger
 
@@ -16,6 +15,10 @@ class TelegramNotifier:
     """Handle Telegram notifications with retry mechanism and rate limiting."""
 
     API_ORIGIN = "https://api.telegram.org"
+    MAX_SEND_ATTEMPTS = 3
+    RETRY_BACKOFF_MIN_SECONDS = 2
+    RETRY_BACKOFF_MAX_SECONDS = 10
+    MAX_RETRY_AFTER_SECONDS = 60
 
     def __init__(self, bot_token: str | None = None, chat_id: str | None = None) -> None:
         self.bot_token = bot_token
@@ -76,18 +79,78 @@ class TelegramNotifier:
                 )
                 self._rate_limit_condition.wait(wait_seconds)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(requests.exceptions.RequestException),
-        reraise=True,
-    )
+    @staticmethod
+    def _error_payload(response) -> dict:
+        """Read a Telegram error body, tolerating non-JSON responses."""
+        try:
+            payload = response.json()
+        except ValueError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _retry_after_seconds(self, response) -> float | None:
+        """Return Telegram's capped retry_after, or None when absent or invalid."""
+        parameters = self._error_payload(response).get("parameters")
+        if not isinstance(parameters, dict):
+            return None
+        retry_after = parameters.get("retry_after")
+        if isinstance(retry_after, bool) or not isinstance(retry_after, (int, float)):
+            return None
+        if not retry_after > 0:
+            return None
+        return min(retry_after, self.MAX_RETRY_AFTER_SECONDS)
+
+    def _backoff_seconds(self, attempt: int) -> float:
+        """Return the exponential backoff delay after a failed attempt."""
+        return min(
+            max(2 ** (attempt - 1), self.RETRY_BACKOFF_MIN_SECONDS),
+            self.RETRY_BACKOFF_MAX_SECONDS,
+        )
+
     def send_message(self, message: str) -> bool:
         """Send message via Telegram bot with retry mechanism and rate limiting."""
         if not self.bot_token or not self.chat_id:
             logger.error("Telegram bot_token 或 chat_id 未配置")
             return False
 
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self._send_once(message)
+            except requests.exceptions.RequestException as exc:
+                response = getattr(exc, "response", None)
+                status_code = getattr(response, "status_code", None)
+                failure = f"HTTP {status_code}" if status_code is not None else type(exc).__name__
+
+                if status_code is not None and 400 <= status_code < 500 and status_code != 429:
+                    logger.error(
+                        "Telegram API 拒绝消息，不再重试: %s %s",
+                        failure,
+                        self._error_payload(response).get("description", "未知错误"),
+                    )
+                    raise
+
+                if attempt >= self.MAX_SEND_ATTEMPTS:
+                    logger.error("Telegram 消息发送失败，已尝试 %d 次: %s", attempt, failure)
+                    raise
+
+                delay = None
+                if status_code == 429:
+                    delay = self._retry_after_seconds(response)
+                if delay is None:
+                    delay = self._backoff_seconds(attempt)
+                logger.warning(
+                    "Telegram 消息发送失败 (%s)，%.1f 秒后重试 (%d/%d)",
+                    failure,
+                    delay,
+                    attempt,
+                    self.MAX_SEND_ATTEMPTS,
+                )
+                time.sleep(delay)
+
+    def _send_once(self, message: str) -> bool:
+        """Perform a single rate-limited sendMessage request."""
         reserved_at = self._wait_for_rate_limit_slot()
 
         url = self._build_api_url("sendMessage")

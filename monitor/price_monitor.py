@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from common.config import CoinConfig
-from common.logging import logger
+from common.logging import logger, safe_exception_text
 from common.notifications import TelegramNotifier
 from common.runtime import BackgroundTaskSet
 from common.utils import (
@@ -141,8 +141,10 @@ class PriceMonitor:
             return
         try:
             sent = task.result()
-        except Exception:
-            logger.exception(f"[{self.config.symbol}] Telegram 通知发送失败")
+        except Exception as exc:
+            logger.error(
+                f"[{self.config.symbol}] Telegram 通知发送失败: {safe_exception_text(exc)}"
+            )
             return
 
         if not sent:

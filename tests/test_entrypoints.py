@@ -202,7 +202,7 @@ class EntrypointImportContractTests(unittest.TestCase):
         _ = bot.TelegramBot
         _ = monitor.WebSocketMultiCoinMonitor
 
-        bot_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, exception=lambda *args, **kwargs: None)
+        bot_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, error=lambda *args, **kwargs: None)
         monitor_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, error=lambda *args, **kwargs: None)
 
         bot_config = types.SimpleNamespace(
@@ -258,7 +258,7 @@ class EntrypointImportContractTests(unittest.TestCase):
         bot = importlib.import_module("bot")
         _ = bot.TelegramBot
 
-        bot_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, exception=lambda *args, **kwargs: None)
+        bot_logger = types.SimpleNamespace(info=lambda *args, **kwargs: None, error=lambda *args, **kwargs: None)
 
         bot_config = types.SimpleNamespace(
             telegram_bot_token="bot-token",

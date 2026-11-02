@@ -233,7 +233,7 @@ HYPE_VOLUME_ALERT_MULTIPLIER=50.0
 - 从 DefiLlama 轮询市值前 `STABLECOIN_DEPEG_TOP_N` 个稳定币
 - 默认在偏离 $1 达到 `±5%` 时触发告警，可通过 `STABLECOIN_DEPEG_THRESHOLD_PERCENT` 调整
 - 同一稳定币在持续脱锚期间受 `STABLECOIN_DEPEG_ALERT_COOLDOWN_SECONDS` 限制
-- 回到正常区间后清除脱锚状态（默认阈值下为 `[0.95, 1.05]`）
+- 回到正常区间后（默认阈值下为 `[0.95, 1.05]`）发送恢复通知并清除脱锚状态；恢复通知发送失败时保留脱锚状态，下一轮重试；若脱锚告警此前未成功送达，则直接清除状态，不发恢复通知
 
 说明：
 
@@ -326,7 +326,9 @@ docker compose exec crypto-bot bash
   - `TelegramNotifier` 现在要求 Telegram API 显式返回 `ok=true` 才视为发送成功
   - 对 malformed JSON、缺少 `ok`、`ok=false` 的响应会明确返回失败，不再误判为成功
   - `test_connection()` 不再把可能带 token 的异常文本写入日志
+  - `setup_logging()` 为控制台、文件和 `logging.lastResort` 处理器安装全局脱敏过滤器，并替换 `sys.excepthook`，第三方库日志与 traceback 中的 Telegram token 都会被替换为 `<redacted>`
   - 每分钟超过 20 条时会等待配额，不再静默丢弃告警
+  - 最多尝试 3 次：429 之外的 4xx 不重试并立即失败；429 等待 Telegram 的 `parameters.retry_after`（上限 60 秒，缺失时使用指数退避）；5xx 与网络错误使用指数退避重试
 - **告警状态语义**：
   - `PriceMonitor` 发送期间保留冷却防重复，失败后释放冷却并恢复价格基准，由后续行情重试同一次跨档；冷却期间被抑制的跨档不补发
   - `StablecoinDepegMonitor` 的 `last_alert_time` 与 `alerts` 只在真实发送成功后更新；单个告警发送失败不会中断本轮轮询，其余稳定币继续处理，失败项在下一轮重试

@@ -441,7 +441,7 @@ class PriceMonitorRegressionTests(unittest.TestCase):
                 monitor.price_monitor,
                 "now_in_configured_timezone",
                 return_value=current_time,
-            ), patch.object(monitor.price_monitor.logger, "exception"):
+            ), patch.object(monitor.price_monitor.logger, "error"):
                 price_monitor._send_milestone_notification(101_000.0, 101_000.0)
                 await price_monitor.flush_notification_tasks()
 
@@ -470,7 +470,7 @@ class PriceMonitorRegressionTests(unittest.TestCase):
                 monitor.price_monitor,
                 "now_in_configured_timezone",
                 return_value=current_time,
-            ), patch.object(monitor.price_monitor.logger, "exception"):
+            ), patch.object(monitor.price_monitor.logger, "error"):
                 price_monitor._send_volatility_alert(101_000.0, ["区间波动: 1.00%"])
                 await price_monitor.flush_notification_tasks()
 
@@ -498,7 +498,7 @@ class PriceMonitorRegressionTests(unittest.TestCase):
                 monitor.price_monitor,
                 "now_in_configured_timezone",
                 return_value=current_time,
-            ), patch.object(monitor.price_monitor.logger, "exception"):
+            ), patch.object(monitor.price_monitor.logger, "error"):
                 price_monitor.check_volume_anomaly(101_000.0, 20_000.0)
                 await price_monitor.flush_notification_tasks()
 
@@ -2133,7 +2133,7 @@ class MainEntrypointRegressionTests(unittest.TestCase):
                  ),
              ), \
              patch.object(bot, "TelegramNotifier", return_value=DummyNotifier()), \
-             patch.object(bot.logger, "exception"), \
+             patch.object(bot.logger, "error"), \
              patch.object(bot, "TelegramBot", DummyBot):
             bot.main()
 

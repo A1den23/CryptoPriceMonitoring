@@ -40,6 +40,15 @@ class BlockingNotifier:
         return True
 
 
+def pending_send_to_thread(notifier, pending_notification):
+    async def fake_to_thread(func, *args, **kwargs):
+        if func is notifier.test_connection:
+            return func(*args, **kwargs)
+        return await pending_notification()
+
+    return fake_to_thread
+
+
 class FakeTask:
     def __init__(self) -> None:
         self.cancel_called = False
@@ -281,6 +290,54 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         mock_print.assert_not_called()
 
+    async def test_ws_monitor_run_tests_connection_off_event_loop(self) -> None:
+        for connected in (True, False):
+            with self.subTest(connected=connected):
+                ws_task = FakeTask()
+                shutdown_task = FakeTask()
+                refresh_task = FakeTask()
+                fake_monitor = types.SimpleNamespace(flush_notification_tasks=AsyncMock())
+                ws_client = types.SimpleNamespace(
+                    start=AsyncMock(),
+                    stop=AsyncMock(),
+                    get_statistics=lambda: {},
+                )
+                connection_threads: list[int] = []
+
+                def fake_test_connection() -> bool:
+                    connection_threads.append(threading.get_ident())
+                    return connected
+
+                def fake_create_task(coro):
+                    name = coro.cr_code.co_name
+                    coro.close()
+                    if name == "start":
+                        return ws_task
+                    if name == "_run_stablecoin_universe_refresh_loop":
+                        return refresh_task
+                    return shutdown_task
+
+                with patch.object(WebSocketMultiCoinMonitor, "_setup_signal_handlers", return_value=None), \
+                     patch("monitor.ws_monitor.TelegramNotifier") as mock_notifier_cls, \
+                     patch("monitor.ws_monitor.BinanceWebSocketClient", return_value=ws_client), \
+                     patch("monitor.ws_monitor.asyncio.create_task", side_effect=fake_create_task), \
+                     patch("monitor.ws_monitor.asyncio.wait", return_value=({shutdown_task}, {ws_task, refresh_task})), \
+                     patch("monitor.ws_monitor.logger.warning") as mock_warning:
+                    notifier = mock_notifier_cls.return_value
+                    notifier.test_connection.side_effect = fake_test_connection
+                    notifier.send_message.return_value = True
+
+                    ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
+                    ws_monitor.monitors = {"BTCUSDT": fake_monitor}
+                    ws_monitor._shutdown_event.set()
+
+                    await ws_monitor.run()
+
+                self.assertEqual(len(connection_threads), 1)
+                self.assertNotEqual(connection_threads[0], threading.get_ident())
+                warnings = [call.args[0] for call in mock_warning.call_args_list]
+                self.assertEqual("测试消息发送失败，请检查 Telegram 配置" in warnings, not connected)
+
     async def test_ws_monitor_run_closes_owned_notifier_on_shutdown(self) -> None:
         ws_task = FakeTask()
         shutdown_task = FakeTask()
@@ -387,7 +444,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
             ws_monitor._shutdown_event.set()
 
-            with patch("monitor.ws_monitor.asyncio.to_thread", new=lambda *args, **kwargs: pending_notification()):
+            with patch("monitor.ws_monitor.asyncio.to_thread", new=pending_send_to_thread(notifier, pending_notification)):
                 await ws_monitor._on_disconnect("test disconnect")
                 await asyncio.wait_for(notification_started.wait(), timeout=1)
                 self.assertEqual(len(ws_monitor._notification_tasks), 1)
@@ -448,7 +505,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
             ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
 
-            with patch("monitor.ws_monitor.asyncio.to_thread", new=lambda *args, **kwargs: pending_notification()):
+            with patch("monitor.ws_monitor.asyncio.to_thread", new=pending_send_to_thread(notifier, pending_notification)):
                 await ws_monitor._on_reconnect(attempt_count=1)
                 await asyncio.wait_for(notification_started.wait(), timeout=1)
                 self.assertEqual(len(ws_monitor._notification_tasks), 1)

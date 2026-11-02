@@ -15,6 +15,7 @@ from common import (
     now_in_configured_timezone,
     setup_logging,
 )
+from common.logging import safe_exception_text
 
 __all__ = [
     "ConfigManager",
@@ -95,8 +96,8 @@ def main():
             try:
                 notifier.send_message(startup_message)
                 logger.info("启动通知已发送")
-            except Exception:
-                logger.exception("启动通知发送失败")
+            except Exception as exc:
+                logger.error(f"启动通知发送失败: {safe_exception_text(exc)}")
 
             bot.run()
 
@@ -110,8 +111,8 @@ def main():
                 try:
                     notifier.send_message(shutdown_message)
                     logger.info("停机通知已发送")
-                except Exception:
-                    logger.exception("停机通知发送失败")
+                except Exception as exc:
+                    logger.error(f"停机通知发送失败: {safe_exception_text(exc)}")
 
         except ValueError as e:
             logger.error(f"配置错误: {e}")

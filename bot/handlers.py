@@ -8,7 +8,7 @@ from difflib import get_close_matches
 from telegram import InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from common.logging import logger
+from common.logging import logger, safe_exception_text
 from common.stablecoin_universe import resolve_live_snapshots_for_cached_universe
 
 from .messages import (
@@ -150,7 +150,7 @@ async def stablecoins_command(self, update: Update, context: ContextTypes.DEFAUL
         message = render_stablecoin_prices_message(stablecoins, self._format_timestamp())
         await self._send_or_edit_message(update.effective_chat.id, message)
     except Exception as exc:
-        logger.error(f"获取稳定币价格失败: {exc}")
+        logger.error(f"获取稳定币价格失败: {safe_exception_text(exc)}")
         await self._send_or_edit_message(update.effective_chat.id, "❌ 获取前25稳定币价格失败")
 
 
@@ -214,7 +214,7 @@ async def send_price_update(self, chat_id, coin_name, message=None):
                 message=message,
             )
     except Exception as e:
-        logger.error(f"发送 {coin_name} 价格更新失败: {e}")
+        logger.error(f"发送 {coin_name} 价格更新失败: {safe_exception_text(e)}")
         await self._send_or_edit_message(
             chat_id,
             f"❌ 获取 {coin_name} 价格时出错",
