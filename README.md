@@ -117,6 +117,8 @@ docker compose down
 |------|------|--------|
 | `DEBUG` | 是否开启调试 | `false` |
 | `LOG_LEVEL` | 日志级别（`DEBUG/INFO/WARNING/ERROR`） | `INFO` |
+| `LOG_MAX_BYTES` | 单个日志文件轮转大小（字节，`1024`–`1073741824`，超出范围使用默认值） | `10485760` |
+| `LOG_BACKUP_COUNT` | 每个日志文件保留的轮转份数（`1`–`100`，超出范围使用默认值） | `10` |
 | `TIMEZONE` | 时区（如 `Asia/Shanghai`, `UTC`, `America/New_York`） | `Asia/Shanghai` |
 | `COIN_LIST` | 逗号分隔的币种名 | `BTC,ETH,SOL,HYPE,USD1` |
 | `MILESTONE_ALERT_COOLDOWN_SECONDS` | 里程碑告警冷却（秒） | 600 |
@@ -340,6 +342,7 @@ docker compose exec crypto-bot bash
   - `common` / `bot` / `monitor` 的包级导出已收敛，内部导入更显式
 - **日志与部署契约**：
   - 文件日志已切换为轮转策略，避免无限增长
+  - 逐笔价格行已降为 `DEBUG`；`INFO` 级别每个交易对每 5 分钟最多记录一条价格摘要
   - `.dockerignore` 现已排除 `.venv/`
   - Dockerfile、Compose、README、DEPLOYMENT 已统一到 `python -m monitor` / `python -m bot` 主入口
 - **验证结果**：

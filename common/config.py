@@ -17,11 +17,23 @@ except ImportError:
 
 _ENV_LOADED = False
 _ENV_PATH = Path(__file__).parent.parent / ".env"
+DEFAULT_LOG_MAX_BYTES = 10_485_760
+DEFAULT_LOG_BACKUP_COUNT = 10
 
 
 def get_configured_log_level_name() -> str | None:
     """Return the configured log level name from environment if set."""
     return os.getenv("LOG_LEVEL")
+
+
+def get_configured_log_max_bytes() -> int:
+    """Return the per-file log rotation size; out-of-range values use the default."""
+    return _safe_int_env("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, 1024, 1_073_741_824)
+
+
+def get_configured_log_backup_count() -> int:
+    """Return the rotated log file count; zero is rejected because it disables rotation."""
+    return _safe_int_env("LOG_BACKUP_COUNT", DEFAULT_LOG_BACKUP_COUNT, 1, 100)
 
 
 def is_debug_mode_enabled() -> bool:

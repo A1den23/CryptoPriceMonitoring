@@ -11,11 +11,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Union
 
-from .config import get_configured_log_level_name, is_debug_mode_enabled
+from .config import (
+    get_configured_log_backup_count,
+    get_configured_log_level_name,
+    get_configured_log_max_bytes,
+    is_debug_mode_enabled,
+)
 
 
-DEFAULT_LOG_MAX_BYTES = 1_048_576
-DEFAULT_LOG_BACKUP_COUNT = 3
 TELEGRAM_TOKEN_PATTERN = re.compile(r"bot\d+(?::|%3[Aa])[A-Za-z0-9_-]+")
 
 
@@ -133,12 +136,12 @@ def setup_logging(
         # Create logs directory if it doesn't exist
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Add rotating file handler with conservative defaults
+        # Add rotating file handler using configured retention
         handlers.append(
             RotatingFileHandler(
                 str(log_path),
-                maxBytes=DEFAULT_LOG_MAX_BYTES,
-                backupCount=DEFAULT_LOG_BACKUP_COUNT,
+                maxBytes=get_configured_log_max_bytes(),
+                backupCount=get_configured_log_backup_count(),
             )
         )
     except (PermissionError, OSError, ValueError) as e:

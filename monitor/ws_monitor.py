@@ -21,7 +21,7 @@ from common.stablecoin_universe import (
     compute_next_stablecoin_universe_refresh_time,
     refresh_stablecoin_universe_from_config,
 )
-from common.utils import now_in_configured_timezone
+from common.utils import format_price, now_in_configured_timezone
 
 from .price_monitor import PriceMonitor
 from .runtime_messages import (
@@ -42,6 +42,7 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
     """
 
     SHUTDOWN_NOTIFICATION_TIMEOUT_SECONDS = 5.0
+    PRICE_SUMMARY_INTERVAL_SECONDS = 300
 
     def __init__(self, config: ConfigManager):
         self.config = config
@@ -62,6 +63,7 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
         self.print_interval = 5
         self._pending_updates: list[str] = []
         self._update_lock = asyncio.Lock()
+        self._last_price_summary_times: dict[str, datetime] = {}
 
         self._shutdown_event = asyncio.Event()
         self._signal_registry = SignalHandlerRegistry()
@@ -147,6 +149,7 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
                 self._pending_updates.append(output)
 
         current_time = now_in_configured_timezone()
+        self._log_price_summary(symbol, price, current_time)
         if (
             self.last_print_time is None
             or (current_time - self.last_print_time).total_seconds() >= self.print_interval
@@ -166,6 +169,18 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
             if volume_info:
                 monitor.latest_volume_info = volume_info
 
+    def _log_price_summary(self, symbol: str, price: float, current_time: datetime) -> None:
+        """Log the latest price at INFO at most once per interval for each symbol."""
+        last_logged = self._last_price_summary_times.get(symbol)
+        if (
+            last_logged is not None
+            and (current_time - last_logged).total_seconds() < self.PRICE_SUMMARY_INTERVAL_SECONDS
+        ):
+            return
+
+        self._last_price_summary_times[symbol] = current_time
+        logger.info(f"价格摘要 [{symbol}]: {format_price(price)}")
+
     async def _print_updates(self):
         """Print accumulated price updates."""
         async with self._update_lock:
@@ -176,9 +191,9 @@ class WebSocketMultiCoinMonitor(SignalHandlingMixin):
             self._pending_updates.clear()
 
         timestamp = now_in_configured_timezone().strftime("%H:%M:%S")
-        logger.info(f"实时价格更新 [{timestamp}]:")
+        logger.debug(f"实时价格更新 [{timestamp}]:")
         for update in updates_to_print:
-            logger.info(f"  {update}")
+            logger.debug(f"  {update}")
 
         try:
             print(render_realtime_updates_block(timestamp=timestamp, updates=updates_to_print))

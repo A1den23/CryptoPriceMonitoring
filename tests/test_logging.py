@@ -1,5 +1,6 @@
 import importlib
 import logging
+import os
 import sys
 import unittest
 from logging.handlers import RotatingFileHandler
@@ -46,31 +47,77 @@ class SetupLoggingTests(unittest.TestCase):
                 root_logger.addHandler(handler)
         root_logger.setLevel(level)
 
-    def test_setup_logging_uses_rotating_file_handler(self) -> None:
+    def _setup_handlers_with_env(self, env: dict[str, str]) -> list[logging.Handler]:
         temp_dir = TemporaryDirectory(dir=WORKTREE_ROOT)
         self.addCleanup(temp_dir.cleanup)
-        handlers = []
+        handlers: list[logging.Handler] = []
         self.addCleanup(self._close_handlers, handlers)
         log_file = Path(temp_dir.name) / "logs" / "monitor.log"
 
-        with patch.object(
+        with patch.dict(os.environ), patch.object(
             logging_utils.Path, "cwd", return_value=WORKTREE_ROOT
         ), patch.object(logging_utils.logging, "basicConfig") as basic_config:
+            os.environ.pop("LOG_MAX_BYTES", None)
+            os.environ.pop("LOG_BACKUP_COUNT", None)
+            os.environ.update(env)
             logging_utils.setup_logging(log_file=str(log_file))
 
         handlers.extend(basic_config.call_args.kwargs["handlers"])
+        return handlers
+
+    def test_setup_logging_uses_rotating_file_handler(self) -> None:
+        handlers = self._setup_handlers_with_env({})
 
         file_handlers = [
             handler for handler in handlers if isinstance(handler, RotatingFileHandler)
         ]
         self.assertEqual(len(file_handlers), 1)
-        self.assertEqual(file_handlers[0].maxBytes, 1_048_576)
-        self.assertEqual(file_handlers[0].backupCount, 3)
+        self.assertEqual(file_handlers[0].maxBytes, 10_485_760)
+        self.assertEqual(file_handlers[0].backupCount, 10)
 
         stream_handlers = [
             handler for handler in handlers if type(handler) is logging.StreamHandler
         ]
         self.assertEqual(len(stream_handlers), 1)
+
+        for handler in handlers:
+            self.assertTrue(
+                any(
+                    isinstance(log_filter, logging_utils.TokenRedactingFilter)
+                    for log_filter in handler.filters
+                )
+            )
+
+    def test_setup_logging_reads_rotation_settings_from_env(self) -> None:
+        handlers = self._setup_handlers_with_env(
+            {"LOG_MAX_BYTES": "2048", "LOG_BACKUP_COUNT": "2"}
+        )
+
+        file_handler = next(
+            handler for handler in handlers if isinstance(handler, RotatingFileHandler)
+        )
+        self.assertEqual(file_handler.maxBytes, 2048)
+        self.assertEqual(file_handler.backupCount, 2)
+
+    def test_setup_logging_rejects_rotation_settings_that_disable_rotation(self) -> None:
+        handlers = self._setup_handlers_with_env(
+            {"LOG_MAX_BYTES": "0", "LOG_BACKUP_COUNT": "0"}
+        )
+
+        file_handler = next(
+            handler for handler in handlers if isinstance(handler, RotatingFileHandler)
+        )
+        self.assertEqual(file_handler.maxBytes, 10_485_760)
+        self.assertEqual(file_handler.backupCount, 10)
+
+    def test_rotation_settings_are_documented(self) -> None:
+        env_example = (WORKTREE_ROOT / ".env.example").read_text(encoding="utf-8")
+        readme = (WORKTREE_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("LOG_MAX_BYTES=10485760", env_example)
+        self.assertIn("LOG_BACKUP_COUNT=10", env_example)
+        self.assertIn("`LOG_MAX_BYTES`", readme)
+        self.assertIn("`LOG_BACKUP_COUNT`", readme)
 
     def test_setup_logging_falls_back_to_console_when_rotating_handler_fails(self) -> None:
         temp_dir = TemporaryDirectory(dir=WORKTREE_ROOT)

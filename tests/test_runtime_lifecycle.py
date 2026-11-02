@@ -1,13 +1,15 @@
 import asyncio
 import importlib
 import importlib.util
+import logging
 import signal
 import sys
 import threading
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.stubs import install_dependency_stubs
 
@@ -207,6 +209,62 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(notifier.messages, ["hello"])
         self.assertEqual(monitor._notification_tasks, set())
+
+    async def test_ws_monitor_logs_price_ticks_at_debug_not_info(self) -> None:
+        ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
+        ws_monitor._pending_updates.append("tick-line")
+
+        with patch("builtins.print") as mock_print, \
+             patch.object(ws_monitor, "_touch_heartbeat") as mock_touch, \
+             self.assertLogs("common.logging", level="DEBUG") as captured:
+            await ws_monitor._print_updates()
+
+        self.assertEqual(
+            {record.levelno for record in captured.records},
+            {logging.DEBUG},
+        )
+        self.assertIn("  tick-line", [record.getMessage() for record in captured.records])
+        mock_print.assert_called_once()
+        mock_touch.assert_called_once()
+
+    async def test_ws_monitor_price_summary_is_throttled_per_symbol(self) -> None:
+        ws_monitor = WebSocketMultiCoinMonitor(self._build_ws_config())
+        btc_monitor = MagicMock()
+        btc_monitor.check.return_value = None
+        eth_monitor = MagicMock()
+        eth_monitor.check.return_value = None
+        ws_monitor.monitors = {"BTCUSDT": btc_monitor, "ETHUSDT": eth_monitor}
+
+        start = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        clock = {"now": start}
+
+        async def tick(offset_seconds: int, symbol: str, price: float) -> None:
+            clock["now"] = start + timedelta(seconds=offset_seconds)
+            await ws_monitor._on_price_update(symbol, price)
+
+        with patch("monitor.ws_monitor.now_in_configured_timezone", side_effect=lambda: clock["now"]), \
+             patch.object(ws_monitor, "_touch_heartbeat") as mock_touch, \
+             self.assertLogs("common.logging", level="INFO") as captured:
+            await tick(0, "BTCUSDT", 100000.0)
+            await tick(1, "ETHUSDT", 3000.0)
+            await tick(299, "BTCUSDT", 100001.0)
+            await tick(300, "BTCUSDT", 100002.0)
+            await tick(301, "ETHUSDT", 3001.0)
+            await tick(301, "BTCUSDT", 100003.0)
+            await tick(301, "UNKNOWNUSDT", 1.0)
+
+        self.assertEqual(
+            [(record.levelno, record.getMessage()) for record in captured.records],
+            [
+                (logging.INFO, "价格摘要 [BTCUSDT]: $100,000.00"),
+                (logging.INFO, "价格摘要 [ETHUSDT]: $3,000.00"),
+                (logging.INFO, "价格摘要 [BTCUSDT]: $100,002.00"),
+                (logging.INFO, "价格摘要 [ETHUSDT]: $3,001.00"),
+            ],
+        )
+        self.assertEqual(btc_monitor.check.call_count, 4)
+        self.assertEqual(eth_monitor.check.call_count, 2)
+        self.assertEqual(mock_touch.call_count, 6)
 
     async def test_ws_monitor_run_drains_monitor_notification_tasks_on_shutdown(self) -> None:
         ws_task = FakeTask()
