@@ -97,7 +97,11 @@ class StablecoinDepegMonitor:
             if alert is None:
                 continue
             message, alert_time = alert
-            sent = await self._send_alert(message)
+            try:
+                sent = await self._send_alert(message)
+            except Exception as exc:
+                logger.error(f"[{snapshot.symbol}] 稳定币告警发送失败: {type(exc).__name__}")
+                continue
             if not sent:
                 continue
             self._mark_alert_sent(snapshot, alert_time)

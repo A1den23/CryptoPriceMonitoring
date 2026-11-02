@@ -1,5 +1,6 @@
 """Pure payload parsers for Binance WebSocket messages."""
 
+import math
 import re
 
 
@@ -14,6 +15,9 @@ def parse_ticker_message(data: dict) -> tuple[str, float]:
     else:
         symbol = data["s"]
         price = float(data["c"])
+
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError(f"Invalid ticker price: {price}")
 
     return symbol, price
 

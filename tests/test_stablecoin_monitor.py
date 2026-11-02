@@ -92,6 +92,38 @@ class StablecoinMonitorSendStateTests(unittest.TestCase):
         mock_to_thread.assert_awaited_once()
         notifier.send_message.assert_called_once()
 
+    def test_run_once_continues_after_send_exception_and_retries_next_poll(self) -> None:
+        first = StablecoinSnapshot("USD Coin", "USDC", 0.94, 1000.0, 1)
+        second = StablecoinSnapshot("Tether", "USDT", 0.94, 900.0, 2)
+
+        notifier = types.SimpleNamespace(
+            send_message=Mock(side_effect=[RuntimeError("secret-token"), True, True])
+        )
+        stablecoin_monitor = self._build_stablecoin_monitor(notifier)
+        clock = FakeClock(datetime(2026, 3, 24, tzinfo=timezone.utc))
+
+        with patch("monitor.stablecoin_depeg_monitor.now_in_configured_timezone", side_effect=clock.now), \
+             patch(
+                 "monitor.stablecoin_depeg_monitor.resolve_live_snapshots_for_cached_universe",
+                 new=AsyncMock(return_value=[first, second]),
+             ), \
+             patch("monitor.stablecoin_depeg_monitor.logger.error") as mock_error:
+            first_alerts = asyncio.run(stablecoin_monitor.run_once())
+            first_state = stablecoin_monitor._states[("USDC", "USD Coin")]
+            second_state = stablecoin_monitor._states[("USDT", "Tether")]
+
+            self.assertEqual(first_alerts, 1)
+            self.assertIsNone(first_state.last_alert_time)
+            self.assertEqual(second_state.last_alert_time, clock.current)
+            mock_error.assert_called_once()
+            self.assertNotIn("secret-token", mock_error.call_args.args[0])
+
+            second_alerts = asyncio.run(stablecoin_monitor.run_once())
+
+        self.assertEqual(second_alerts, 1)
+        self.assertEqual(first_state.last_alert_time, clock.current)
+        self.assertEqual(notifier.send_message.call_count, 3)
+
     def test_run_once_records_last_alert_time_after_successful_send(self) -> None:
         snapshot = StablecoinSnapshot("USDC", "USDC", 0.94, 1000.0, 1)
 

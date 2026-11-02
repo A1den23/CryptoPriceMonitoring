@@ -216,6 +216,7 @@ class PriceMonitor:
             logger.info(f"[{coin}] 里程碑突破: {milestone_str}")
 
         def _rollback() -> None:
+            self.last_price = previous_price
             self.last_milestone_notification_time = previous_milestone_time
 
         self._send_notification(message, on_success=_log_sent, on_failure=_rollback)

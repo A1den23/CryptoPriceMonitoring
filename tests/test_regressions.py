@@ -447,7 +447,7 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertEqual(price_monitor.last_price, 101_000.0)
+        self.assertEqual(price_monitor.last_price, 100_000.0)
         self.assertIsNone(price_monitor.last_milestone_notification_time)
 
     def test_volatility_send_failure_releases_cooldown_for_retry(self) -> None:
@@ -527,8 +527,88 @@ class PriceMonitorRegressionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-        self.assertEqual(price_monitor.last_price, 101_000.0)
+        self.assertEqual(price_monitor.last_price, 100_000.0)
         self.assertIsNone(price_monitor.last_milestone_notification_time)
+
+    def test_failed_milestone_send_retries_crossing_on_next_tick(self) -> None:
+        notifier = StubNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.last_price = 999_000.0
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "error"), patch.object(
+                notifier,
+                "send_message",
+                side_effect=[False, True],
+            ) as send_message:
+                self.assertTrue(price_monitor.check_integer_milestone(1_001_000.0, _now=current_time))
+                await price_monitor.flush_notification_tasks()
+                self.assertEqual(price_monitor.last_price, 999_000.0)
+
+                self.assertTrue(price_monitor.check_integer_milestone(1_001_000.0, _now=current_time))
+                await price_monitor.flush_notification_tasks()
+                self.assertEqual(price_monitor.last_price, 1_001_000.0)
+                self.assertEqual(price_monitor.last_milestone_notification_time, current_time)
+
+                self.assertFalse(price_monitor.check_integer_milestone(1_001_000.0, _now=current_time))
+                await price_monitor.flush_notification_tasks()
+                self.assertEqual(send_message.call_count, 2)
+
+        asyncio.run(exercise())
+
+    def test_failed_milestone_send_restores_price_after_ticks_during_send(self) -> None:
+        notifier = StubNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        current_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.last_price = 999_000.0
+
+        async def exercise() -> None:
+            with patch.object(
+                monitor.price_monitor,
+                "now_in_configured_timezone",
+                return_value=current_time,
+            ), patch.object(monitor.price_monitor.logger, "error"), patch.object(
+                notifier,
+                "send_message",
+                return_value=False,
+            ):
+                self.assertTrue(price_monitor.check_integer_milestone(1_001_000.0, _now=current_time))
+                self.assertFalse(price_monitor.check_integer_milestone(1_001_500.0, _now=current_time))
+                self.assertEqual(price_monitor.last_price, 1_001_500.0)
+                await price_monitor.flush_notification_tasks()
+
+        asyncio.run(exercise())
+
+        self.assertEqual(price_monitor.last_price, 999_000.0)
+
+    def test_cooldown_suppressed_crossing_is_not_replayed_after_cooldown(self) -> None:
+        notifier = StubNotifier()
+        price_monitor = self._build_price_monitor(notifier)
+        start_time = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        price_monitor.last_price = 999_000.0
+        price_monitor.last_milestone_notification_time = start_time
+
+        with patch.object(notifier, "send_message", return_value=True) as send_message:
+            self.assertFalse(
+                price_monitor.check_integer_milestone(
+                    1_001_000.0,
+                    _now=start_time + timedelta(seconds=1),
+                )
+            )
+            self.assertEqual(price_monitor.last_price, 1_001_000.0)
+            self.assertFalse(
+                price_monitor.check_integer_milestone(
+                    1_001_000.0,
+                    _now=start_time + timedelta(seconds=601),
+                )
+            )
+
+        send_message.assert_not_called()
 
     def test_volatility_false_send_result_releases_cooldown_for_retry(self) -> None:
         class FalseNotifier(StubNotifier):

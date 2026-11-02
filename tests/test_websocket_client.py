@@ -48,6 +48,17 @@ class WebSocketParserRegressionTests(unittest.TestCase):
         self.assertEqual(symbol, "BTCUSDT")
         self.assertEqual(price, 95123.45)
 
+    def test_parse_ticker_message_rejects_non_finite_and_non_positive_prices(self) -> None:
+        parser = importlib.import_module("common.clients.websocket_parser")
+        for raw_price in ("nan", "NaN", "inf", "-inf", "Infinity", "0", "0.0", "-1.5"):
+            with self.subTest(raw_price=raw_price):
+                with self.assertRaises(ValueError):
+                    parser.parse_ticker_message({"s": "BTCUSDT", "c": raw_price})
+                with self.assertRaises(ValueError):
+                    parser.parse_ticker_message(
+                        {"stream": "btcusdt@ticker", "data": {"s": "BTCUSDT", "c": raw_price}}
+                    )
+
     def test_parse_kline_message_preserves_closed_kline_shape(self) -> None:
         parser = importlib.import_module("common.clients.websocket_parser")
         kline_data = parser.parse_kline_message(
@@ -73,6 +84,23 @@ class WebSocketParserRegressionTests(unittest.TestCase):
 
 
 class BinanceWebSocketClientRegressionTests(unittest.TestCase):
+    def test_message_handler_drops_invalid_ticker_price_and_keeps_processing(self) -> None:
+        on_price = AsyncMock()
+        client = monitor.BinanceWebSocketClient(["BTCUSDT"], on_price)
+        client.websocket = FakeAsyncIterableWebSocket(
+            [
+                '{"e": "24hrTicker", "s": "BTCUSDT", "c": "NaN"}',
+                '{"e": "24hrTicker", "s": "BTCUSDT", "c": "0"}',
+                '{"e": "24hrTicker", "s": "BTCUSDT", "c": "95123.45"}',
+            ]
+        )
+
+        with patch("common.clients.websocket.logger.error"):
+            asyncio.run(client._message_handler())
+
+        on_price.assert_awaited_once_with("BTCUSDT", 95123.45)
+        self.assertEqual(client.messages_received, 1)
+
     def test_message_handler_transitions_to_reconnecting_when_stream_ends_cleanly(self) -> None:
         async def on_price(symbol: str, price: float) -> None:
             return None
